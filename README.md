@@ -2,6 +2,8 @@
 
 3D visualization of your AWS infrastructure. Walk through your cloud like a data center.
 
+![aws3d screenshot](screenshot.png)
+
 ![React Three Fiber](https://img.shields.io/badge/R3F-Three.js-blue) ![AWS SDK v3](https://img.shields.io/badge/AWS_SDK-v3-orange)
 
 ## What is this?
