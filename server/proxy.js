@@ -1,20 +1,52 @@
 import http from 'node:http'
-import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand } from '@aws-sdk/client-ec2'
+import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeVolumesCommand, RebootInstancesCommand, StopInstancesCommand } from '@aws-sdk/client-ec2'
 import { EKSClient, ListClustersCommand, DescribeClusterCommand } from '@aws-sdk/client-eks'
 import { RDSClient, DescribeDBInstancesCommand } from '@aws-sdk/client-rds'
 import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
 import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand } from '@aws-sdk/client-elastic-load-balancing-v2'
 import { EFSClient, DescribeFileSystemsCommand } from '@aws-sdk/client-efs'
+import { STSClient, GetCallerIdentityCommand, AssumeRoleCommand } from '@aws-sdk/client-sts'
 import { fromIni, fromEnv } from '@aws-sdk/credential-providers'
 
-export function createProxy({ profile, region, port = 9876 }) {
+export function createProxy({ profile, region, port = 9876, roleArn }) {
   const hasEnvCreds = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
-  const creds = hasEnvCreds
-    ? fromEnv()
-    : profile
-      ? fromIni({ profile })
-      : undefined
 
+  // If --role-arn is provided, we assume the role ourselves and auto-refresh
+  let assumedCreds = null
+  let assumedExpiry = 0
+
+  function buildCredentialProvider() {
+    if (roleArn) {
+      // Return a provider that auto-refreshes via AssumeRole
+      return async () => {
+        const now = Date.now()
+        if (assumedCreds && now < assumedExpiry - 300000) return assumedCreds // 5min buffer
+        // Use base creds (env vars or profile) to assume the role
+        const baseCreds = hasEnvCreds ? fromEnv() : profile ? fromIni({ profile }) : undefined
+        const baseOpts = { region, ...(baseCreds && { credentials: baseCreds }) }
+        const baseSts = new STSClient(baseOpts)
+        const resp = await baseSts.send(new AssumeRoleCommand({
+          RoleArn: roleArn,
+          RoleSessionName: 'aws3d-proxy',
+          DurationSeconds: 3600,
+        }))
+        assumedCreds = {
+          accessKeyId: resp.Credentials.AccessKeyId,
+          secretAccessKey: resp.Credentials.SecretAccessKey,
+          sessionToken: resp.Credentials.SessionToken,
+        }
+        assumedExpiry = resp.Credentials.Expiration.getTime()
+        const remaining = Math.round((assumedExpiry - Date.now()) / 60000)
+        console.log(`  ↻ Assumed role, expires in ${remaining}min`)
+        return assumedCreds
+      }
+    }
+    if (hasEnvCreds) return fromEnv()
+    if (profile) return fromIni({ profile })
+    return undefined
+  }
+
+  const creds = buildCredentialProvider()
   const opts = { region, ...(creds && { credentials: creds }) }
 
   const ec2 = new EC2Client(opts)
@@ -23,10 +55,12 @@ export function createProxy({ profile, region, port = 9876 }) {
   const kafka = new KafkaClient(opts)
   const elbv2 = new ElasticLoadBalancingV2Client(opts)
   const efs = new EFSClient(opts)
+  const sts = new STSClient(opts)
 
   async function fetchStatus() {
-    const [instances, clusters, dbInstances, mskClusters, loadBalancers, fileSystems] = await Promise.all([
+    const [instances, instanceStatus, clusters, dbInstances, mskClusters, loadBalancers, fileSystems] = await Promise.all([
       ec2.send(new DescribeInstancesCommand({})).catch(e => ({ Reservations: [], _error: e.message })),
+      ec2.send(new DescribeInstanceStatusCommand({ IncludeAllInstances: true })).catch(e => ({ InstanceStatuses: [], _error: e.message })),
       eks.send(new ListClustersCommand({})).catch(e => ({ clusters: [], _error: e.message })),
       rds.send(new DescribeDBInstancesCommand({})).catch(e => ({ DBInstances: [], _error: e.message })),
       kafka.send(new ListClustersV2Command({})).catch(e => ({ ClusterInfoList: [], _error: e.message })),
@@ -34,16 +68,57 @@ export function createProxy({ profile, region, port = 9876 }) {
       efs.send(new DescribeFileSystemsCommand({})).catch(e => ({ FileSystems: [], _error: e.message })),
     ])
 
+    // Build status check map
+    const statusMap = {}
+    for (const s of (instanceStatus.InstanceStatuses || [])) {
+      statusMap[s.InstanceId] = {
+        system: s.SystemStatus?.Status,  // ok, impaired, initializing
+        instance: s.InstanceStatus?.Status,
+      }
+    }
+
+
+    // Get all volume IDs and fetch sizes/types
+    const allVolumeIds = (instances.Reservations || []).flatMap(r => r.Instances)
+      .flatMap(i => (i.BlockDeviceMappings || []).map(b => b.Ebs?.VolumeId).filter(Boolean))
+    const volumeMap = {}
+    if (allVolumeIds.length > 0) {
+      try {
+        const volRes = await ec2.send(new DescribeVolumesCommand({ VolumeIds: allVolumeIds.slice(0, 200) }))
+        for (const v of (volRes.Volumes || [])) {
+          volumeMap[v.VolumeId] = { size: v.Size, type: v.VolumeType, iops: v.Iops }
+        }
+      } catch (e) { console.warn('DescribeVolumes failed:', e.message) }
+    }
     // Normalize EC2
-    const ec2Instances = (instances.Reservations || []).flatMap(r => r.Instances).map(i => ({
-      id: i.InstanceId,
-      name: (i.Tags || []).find(t => t.Key === 'Name')?.Value || i.InstanceId,
-      state: i.State?.Name,
-      type: i.InstanceType,
-      az: i.Placement?.AvailabilityZone,
-      ip: i.PrivateIpAddress,
-      status: i.State?.Name === 'running' ? 'healthy' : i.State?.Name === 'stopped' ? 'down' : 'degraded',
-    }))
+    const ec2Instances = (instances.Reservations || []).flatMap(r => r.Instances).map(i => {
+      const checks = statusMap[i.InstanceId]
+      const systemOk = checks?.system === 'ok' ? 1 : 0
+      const instanceOk = checks?.instance === 'ok' ? 1 : 0
+      const totalChecks = 2
+      const passedChecks = systemOk + instanceOk
+
+      return {
+        id: i.InstanceId,
+        name: (i.Tags || []).find(t => t.Key === 'Name')?.Value || i.InstanceId,
+        state: i.State?.Name,
+        type: i.InstanceType,
+        az: i.Placement?.AvailabilityZone,
+        ip: i.PrivateIpAddress,
+        launchTime: i.LaunchTime,
+        checks: `${passedChecks}/${totalChecks}`,
+        checksStatus: checks?.system === 'initializing' || checks?.instance === 'initializing' ? 'initializing' : null,
+        volumes: (i.BlockDeviceMappings || []).map(b => ({
+          device: b.DeviceName,
+          volumeId: b.Ebs?.VolumeId,
+          ...(volumeMap[b.Ebs?.VolumeId] || {}),
+        })),
+        rootDevice: i.RootDeviceType, // ebs or instance-store
+        status: i.State?.Name === 'running'
+          ? (checks?.system === 'ok' && checks?.instance === 'ok' ? 'healthy' : 'degraded')
+          : i.State?.Name === 'stopped' ? 'down' : 'degraded',
+      }
+    })
 
     // Normalize EKS
     const eksDetails = []
@@ -122,11 +197,19 @@ export function createProxy({ profile, region, port = 9876 }) {
     return targets
   }
 
+  function readBody(req) {
+    return new Promise((resolve) => {
+      let data = ''
+      req.on('data', c => data += c)
+      req.on('end', () => resolve(data))
+    })
+  }
+
   const server = http.createServer(async (req, res) => {
     const origin = req.headers.origin || ''
     if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin)
-      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     }
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
@@ -154,8 +237,40 @@ export function createProxy({ profile, region, port = 9876 }) {
         res.end(JSON.stringify({ error: e.message }))
       }
     } else if (url.pathname === '/api/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region }))
+      // Also verify credentials are still valid
+      try {
+        const identity = await sts.send(new GetCallerIdentityCommand({}))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account }))
+      } catch (e) {
+        const expired = e.name === 'ExpiredTokenException' || e.message?.includes('expired') || e.name === 'InvalidIdentityToken'
+        res.writeHead(expired ? 401 : 200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: !expired, expired, error: expired ? 'Credentials expired' : null, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region }))
+      }
+    } else if (url.pathname === '/api/ec2/reboot' && req.method === 'POST') {
+      const body = await readBody(req)
+      const { instanceId } = JSON.parse(body)
+      if (!instanceId) { res.writeHead(400); res.end('Missing instanceId'); return }
+      try {
+        await ec2.send(new RebootInstancesCommand({ InstanceIds: [instanceId] }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, action: 'reboot', instanceId }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+    } else if (url.pathname === '/api/ec2/stop' && req.method === 'POST') {
+      const body = await readBody(req)
+      const { instanceId } = JSON.parse(body)
+      if (!instanceId) { res.writeHead(400); res.end('Missing instanceId'); return }
+      try {
+        await ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, action: 'stop', instanceId }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
     } else {
       res.writeHead(404)
       res.end('Not found')
@@ -166,6 +281,7 @@ export function createProxy({ profile, region, port = 9876 }) {
     console.log(`\n  🏢 aws3d proxy running on http://127.0.0.1:${port}`)
     console.log(`     Profile: ${profile || '(default)'}`)
     console.log(`     Region:  ${region}`)
+    if (roleArn) console.log(`     Role:    ${roleArn} (auto-refresh)`)
     console.log(`\n  Endpoints:`)
     console.log(`     GET /api/status       — full infrastructure status`)
     console.log(`     GET /api/elb/targets  — target instances for an ELB (on-demand)`)

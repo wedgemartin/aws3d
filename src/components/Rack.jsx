@@ -49,6 +49,20 @@ export default function Rack({ position, label, color, darkColor, category, item
               </Text>
             )}
 
+            {/* Rear label — centered on back of rack */}
+            <Text
+              position={[0, rackHeight / 2, -rackDepth / 2 - 0.01]}
+              rotation={[0, Math.PI, 0]}
+              fontSize={0.35}
+              color={color}
+              anchorX="center"
+              anchorY="middle"
+              outlineWidth={0.02}
+              outlineColor="#000000"
+            >
+              {label}
+            </Text>
+
             {/* Server units */}
             {chunk.map((item, i) =>
               isManaged ? (

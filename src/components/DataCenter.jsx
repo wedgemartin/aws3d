@@ -41,7 +41,7 @@ function guessRole(name) {
   return 'other'
 }
 
-export default function DataCenter({ onSelect }) {
+export default function DataCenter({ onSelect, onPin }) {
   const [ec2, setEc2] = useState(defaultEc2)
   const [rds, setRds] = useState(defaultRds)
   const [eks, setEks] = useState(defaultEks)
@@ -49,12 +49,13 @@ export default function DataCenter({ onSelect }) {
   const [elbs, setElbs] = useState([])
   const [efsList, setEfsList] = useState([])
   const [pinned, setPinned] = useState(null)
-  const [elbTargets, setElbTargets] = useState([]) // on-demand target instances for pinned ELB
+  const [elbTargets, setElbTargets] = useState([])
+  const [loaded, setLoaded] = useState(false) // on-demand target instances for pinned ELB
 
   const poll = useCallback(async () => {
     try {
       const data = await fetchInfraStatus()
-      if (data.simulated) return
+      if (data.simulated) { setLoaded(true); return }
 
       const azSuffix = (az) => {
         if (!az) return 'az-a'
@@ -71,6 +72,7 @@ export default function DataCenter({ onSelect }) {
       if (data.msk?.length) setMsk(prev => ({ ...prev, status: data.msk[0]?.status || prev.status, name: data.msk[0]?.name || prev.name }))
       if (data.elb?.length) setElbs(data.elb.map(lb => ({ ...lb, az: azSuffix(lb.az) })))
       if (data.efs?.length) setEfsList(data.efs)
+      setLoaded(true)
     } catch (e) {
       console.warn('Poll failed:', e.message)
     }
@@ -79,7 +81,18 @@ export default function DataCenter({ onSelect }) {
   useEffect(() => {
     poll()
     const id = setInterval(poll, POLL_INTERVAL)
-    return () => clearInterval(id)
+
+    // Expose fast-poll trigger for EC2 actions
+    window.__aws3dFastPoll = () => {
+      let count = 0
+      const fast = setInterval(() => {
+        poll()
+        count++
+        if (count >= 10) clearInterval(fast) // 10 polls × 3s = 30s of fast polling
+      }, 3000)
+    }
+
+    return () => { clearInterval(id); delete window.__aws3dFastPoll }
   }, [poll])
 
   // Click handler: pin a node or clear pin
@@ -97,16 +110,18 @@ export default function DataCenter({ onSelect }) {
       setPinned(null)
       setElbTargets([])
       onSelect(null)
+      onPin(null)
     } else {
       setPinned(data)
       onSelect(data)
+      onPin(data)
       setElbTargets([])
       // If it's an ELB, fetch targets on-demand
       if (data.arn) {
         fetch(`http://127.0.0.1:9876/api/elb/targets?arn=${encodeURIComponent(data.arn)}`)
           .then(r => r.json())
-          .then(d => setElbTargets(d.targets || []))
-          .catch(() => {})
+          .then(d => { console.log('ELB targets:', d.targets?.length); setElbTargets(d.targets || []) })
+          .catch(e => console.warn('ELB target fetch failed:', e))
       }
     }
   }
@@ -115,7 +130,9 @@ export default function DataCenter({ onSelect }) {
   const handleBgClick = (e) => {
     if (e.object?.userData?.isBackground) {
       setPinned(null)
+      setElbTargets([])
       onSelect(null)
+      onPin(null)
     }
   }
 
@@ -160,7 +177,7 @@ export default function DataCenter({ onSelect }) {
     }
     // ELB → target instances
     if (pinned.arn && elbTargets.length > 0) {
-      return [id, ...elbTargets.map(t => t.instanceId)]
+      return [pinned.id, ...elbTargets.map(t => t.instanceId)]
     }
     return []
   })()
@@ -168,6 +185,8 @@ export default function DataCenter({ onSelect }) {
   // Rack positions registry for drawing interconnect lines
   const rackPositions = {}
   const registerRackPos = (id, worldPos) => { rackPositions[id] = worldPos }
+
+  if (!loaded) return null
 
   return (
     <group>
@@ -292,7 +311,7 @@ export default function DataCenter({ onSelect }) {
                     color={categoryColors.ec2.bright}
                     darkColor={categoryColors.ec2.dark}
                     category="ec2"
-                    items={serversByRole[role].map((s) => ({ id: s.id, name: s.name, status: s.status, ip: s.ip }))}
+                    items={serversByRole[role].map((s) => ({ id: s.id, name: s.name, status: s.status, ip: s.ip, type: s.type, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes }))}
                     onSelect={handleSelect}
                     onClick={handleClick}
                     pinnedId={pinned?.id}

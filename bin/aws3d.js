@@ -14,8 +14,9 @@ if (command === 'serve') {
   const profile = flag('--profile', process.env.AWS_PROFILE || undefined)
   const region = flag('--region', process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1')
   const port = parseInt(flag('--port', '9876'), 10)
+  const roleArn = flag('--role-arn', undefined)
 
-  createProxy({ profile, region, port })
+  createProxy({ profile, region, port, roleArn })
 } else {
   console.log(`
   aws3d — 3D AWS infrastructure visualizer
@@ -24,12 +25,13 @@ if (command === 'serve') {
     aws3d serve [options]
 
   Options:
-    --profile <name>   AWS profile (default: AWS_PROFILE env or 'default')
-    --region <region>  AWS region (default: AWS_REGION env or 'us-east-1')
-    --port <port>      Proxy port (default: 9876)
+    --profile <name>      AWS profile (default: AWS_PROFILE env or 'default')
+    --region <region>     AWS region (default: AWS_REGION env or 'us-east-1')
+    --port <port>         Proxy port (default: 9876)
+    --role-arn <arn>      Assume this IAM role (auto-refreshes before expiry)
 
   Examples:
     aws3d serve --profile production --region us-west-2
-    aws3d serve --profile my-profile
+    aws3d serve --role-arn arn:aws:iam::123456789:role/MyRole --region us-east-1
   `)
 }
