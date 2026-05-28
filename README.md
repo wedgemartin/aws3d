@@ -44,7 +44,17 @@ npm run serve -- --profile my-profile --region us-west-2
 # Option C: Use whatever AWS_PROFILE is set
 export AWS_PROFILE=production
 npm run serve
+
+# Option D: Auto-assume a role (auto-refreshes before expiry)
+# Set base credentials first (IAM user or SSO), then pass the role ARN:
+export AWS_ACCESS_KEY_ID=<base-key>
+export AWS_SECRET_ACCESS_KEY=<base-secret>
+npm run serve -- --role-arn arn:aws:iam::123456789012:role/ReadOnlyRole --region us-east-1
 ```
+
+When using `--role-arn`, the proxy calls `sts:AssumeRole` using your base credentials
+and automatically re-assumes the role ~5 minutes before the session expires. No manual
+refresh needed — the proxy stays alive indefinitely.
 
 The proxy binds to `127.0.0.1:9876` — it only accepts connections from localhost.
 

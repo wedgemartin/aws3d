@@ -20,6 +20,7 @@
     "@aws-sdk/client-elasticache": "^3.712.0",
     "@aws-sdk/client-kafka": "^3.712.0",
     "@aws-sdk/client-rds": "^3.712.0",
+    "@aws-sdk/client-sts": "^3.712.0",
     "@aws-sdk/credential-providers": "^3.712.0",
     "@react-three/drei": "9.117.3",
     "@react-three/fiber": "8.17.10",
