@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { azs as defaultAzs, ec2Servers as defaultEc2, rdsInstances as defaultRds, eksCluster as defaultEks, mskCluster as defaultMsk, managedServices as defaultManaged, categoryColors } from '../data/infrastructure'
+import { azs as defaultAzs, ec2Servers as defaultEc2, rdsInstances as defaultRds, eksCluster as defaultEks, mskCluster as defaultMsk, categoryColors } from '../data/infrastructure'
 import { fetchInfraStatus } from '../data/fetchStatus'
 import Cage from './Cage'
 import Rack from './Rack'
@@ -46,8 +46,10 @@ export default function DataCenter({ onSelect }) {
   const [rds, setRds] = useState(defaultRds)
   const [eks, setEks] = useState(defaultEks)
   const [msk, setMsk] = useState(defaultMsk)
-  const [managed, setManaged] = useState(defaultManaged)
-  const [pinned, setPinned] = useState(null) // pinned node id for interconnect
+  const [elbs, setElbs] = useState([])
+  const [efsList, setEfsList] = useState([])
+  const [pinned, setPinned] = useState(null)
+  const [elbTargets, setElbTargets] = useState([]) // on-demand target instances for pinned ELB
 
   const poll = useCallback(async () => {
     try {
@@ -67,6 +69,8 @@ export default function DataCenter({ onSelect }) {
       }
       if (data.eks?.length) setEks(prev => ({ ...prev, status: data.eks[0]?.status || prev.status, name: data.eks[0]?.name || prev.name }))
       if (data.msk?.length) setMsk(prev => ({ ...prev, status: data.msk[0]?.status || prev.status, name: data.msk[0]?.name || prev.name }))
+      if (data.elb?.length) setElbs(data.elb.map(lb => ({ ...lb, az: azSuffix(lb.az) })))
+      if (data.efs?.length) setEfsList(data.efs)
     } catch (e) {
       console.warn('Poll failed:', e.message)
     }
@@ -90,11 +94,20 @@ export default function DataCenter({ onSelect }) {
 
   const handleClick = (data) => {
     if (pinned?.id === data.id) {
-      setPinned(null) // unpin
+      setPinned(null)
+      setElbTargets([])
       onSelect(null)
     } else {
       setPinned(data)
       onSelect(data)
+      setElbTargets([])
+      // If it's an ELB, fetch targets on-demand
+      if (data.arn) {
+        fetch(`http://127.0.0.1:9876/api/elb/targets?arn=${encodeURIComponent(data.arn)}`)
+          .then(r => r.json())
+          .then(d => setElbTargets(d.targets || []))
+          .catch(() => {})
+      }
     }
   }
 
@@ -144,6 +157,10 @@ export default function DataCenter({ onSelect }) {
     if (rdsItem?.multiAz && rdsItem.secondaryAz) {
       const standbyId = `${id}-standby`
       return [id, standbyId]
+    }
+    // ELB → target instances
+    if (pinned.arn && elbTargets.length > 0) {
+      return [id, ...elbTargets.map(t => t.instanceId)]
     }
     return []
   })()
@@ -240,6 +257,7 @@ export default function DataCenter({ onSelect }) {
                   status: r.isStandby ? 'unknown' : r.status,
                   isStandby: r.isStandby,
                   multiAz: r.multiAz,
+                  endpoint: r.endpoint,
                 }))}
                 onSelect={handleSelect}
                 onClick={handleClick}
@@ -284,15 +302,31 @@ export default function DataCenter({ onSelect }) {
               })
             })()}
 
-            {/* Managed services (only in AZ-A) */}
-            {az.id === 'az-a' && (
+            {/* EFS rack (AZ-A only since EFS is regional) */}
+            {az.id === 'az-a' && efsList.length > 0 && (
               <Rack
-                position={[CAGE_WIDTH / 2 - 3, 0, -CAGE_DEPTH / 2 + 11]}
-                label="Managed"
+                position={[CAGE_WIDTH / 2 - 3, 0, -CAGE_DEPTH / 2 + 3]}
+                label="EFS"
                 color={categoryColors.efs.bright}
                 darkColor={categoryColors.efs.dark}
-                category="managed"
-                items={managed.map((s) => ({ id: s.id, name: s.name, status: s.status }))}
+                category="efs"
+                items={efsList.map((fs) => ({ id: fs.id, name: fs.name, status: fs.status }))}
+                onSelect={handleSelect}
+                onClick={handleClick}
+                pinnedId={pinned?.id}
+                highlightIds={interconnectNodes}
+              />
+            )}
+
+            {/* ELB rack */}
+            {az.id === 'az-a' && elbs.length > 0 && (
+              <Rack
+                position={[CAGE_WIDTH / 2 - 3, 0, -CAGE_DEPTH / 2 + 11]}
+                label="ELB"
+                color={categoryColors.network.bright}
+                darkColor={categoryColors.network.dark}
+                category="elb"
+                items={elbs.map((lb) => ({ id: lb.id, name: `${lb.name} (${lb.type})`, status: lb.status, arn: lb.id, dnsName: lb.dnsName }))}
                 onSelect={handleSelect}
                 onClick={handleClick}
                 pinnedId={pinned?.id}
@@ -322,10 +356,22 @@ export default function DataCenter({ onSelect }) {
           const azX = azPositions[s.az]
           positions[s.id] = [azX - CAGE_WIDTH / 2 + 2, 4, -CAGE_DEPTH / 2 + 3]
         })
+        // ELB position (in AZ-A)
+        elbs.forEach(lb => {
+          positions[lb.id] = [azPositions['az-a'] + CAGE_WIDTH / 2 - 3, 4, -CAGE_DEPTH / 2 + 11]
+        })
+        // EC2 instance positions (approximate — center of their AZ)
+        ec2.forEach(s => {
+          if (!positions[s.id]) {
+            const azX = azPositions[s.az] || azPositions['az-a']
+            positions[s.id] = [azX, 4, 0]
+          }
+        })
 
         let color = categoryColors.eks.bright
         if (pinned.id.startsWith('msk')) color = categoryColors.msk.bright
         else if (rds.find(r => r.id === pinned.id)) color = categoryColors.rds.bright
+        else if (pinned.arn) color = categoryColors.network.bright
 
         return (
           <Interconnect

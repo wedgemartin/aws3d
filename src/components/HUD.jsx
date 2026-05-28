@@ -9,7 +9,7 @@ const styles = {
   },
   panel: {
     background: 'rgba(10,10,20,0.9)', border: '1px solid #334466',
-    borderRadius: 6, padding: '12px 16px', pointerEvents: 'auto', maxWidth: 350,
+    borderRadius: 6, padding: '12px 16px', pointerEvents: 'auto', maxWidth: '60vw',
   },
   title: { fontSize: 14, fontWeight: 'bold', color: '#66aaff', marginBottom: 6 },
   row: { display: 'flex', justifyContent: 'space-between', gap: 16, marginBottom: 2 },
@@ -63,6 +63,8 @@ export default function HUD({ selected, onClose, locked }) {
         <div style={styles.panel}>
           <div style={styles.title}>{selected.name}</div>
           {selected.ip && <div style={styles.row}><span style={styles.label}>IP:</span><span>{selected.ip}</span></div>}
+          {selected.endpoint && <div style={styles.row}><span style={styles.label}>Endpoint:</span><span>{selected.endpoint}</span></div>}
+          {selected.dnsName && <div style={styles.row}><span style={styles.label}>DNS:</span><span>{selected.dnsName}</span></div>}
           <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.status}</span></div>
           {selected.id && <div style={styles.row}><span style={styles.label}>ID:</span><span>{selected.id}</span></div>}
         </div>
