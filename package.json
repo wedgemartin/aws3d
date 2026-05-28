@@ -1,0 +1,33 @@
+{
+  "name": "aws3d",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "aws3d": "./bin/aws3d.js"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "serve": "node bin/aws3d.js serve"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.712.0",
+    "@aws-sdk/client-eks": "^3.712.0",
+    "@aws-sdk/client-elasticache": "^3.712.0",
+    "@aws-sdk/client-kafka": "^3.712.0",
+    "@aws-sdk/client-rds": "^3.712.0",
+    "@aws-sdk/credential-providers": "^3.712.0",
+    "@react-three/drei": "9.117.3",
+    "@react-three/fiber": "8.17.10",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@vitejs/plugin-react": "4.3.4",
+    "vite": "6.0.3"
+  }
+}
