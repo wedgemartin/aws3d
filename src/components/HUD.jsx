@@ -41,7 +41,7 @@ const styles = {
   actions: { marginTop: 8, color: '#668899', fontSize: 11 },
 }
 
-export default function HUD({ selected, onClose, locked, pinned }) {
+export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
   const [proxyInfo, setProxyInfo] = useState(null)
   const [confirmAction, setConfirmAction] = useState(null) // { action: 'reboot'|'stop', instanceId, name }
   const [actionResult, setActionResult] = useState(null)
@@ -120,7 +120,10 @@ export default function HUD({ selected, onClose, locked, pinned }) {
       )}
       {locked && (
         <div style={{ position: 'fixed', top: 20, left: 20, ...styles.hint }}>
-          WASD move · Mouse look · Q/E up/down · Shift sprint · ESC exit
+          WASD move · Mouse look · Q/E up/down · Shift sprint · N toggle view · ESC exit
+          <div style={{ marginTop: 4, color: viewMode === 'subnet' ? '#43a047' : '#aaccff' }}>
+            View: {viewMode === 'subnet' ? '🔌 Network (subnet)' : '📦 Role'}
+          </div>
         </div>
       )}
       {locked && <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', color: '#66aaff', fontSize: 20, opacity: 0.5 }}>+</div>}
@@ -157,6 +160,8 @@ export default function HUD({ selected, onClose, locked, pinned }) {
           {selected.dnsName && <div style={styles.row}><span style={styles.label}>DNS:</span><span>{selected.dnsName}</span></div>}
           <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.status}</span></div>
           {selected.checks && <div style={styles.row}><span style={styles.label}>Checks:</span><span>{selected.checks}</span></div>}
+          {selected.subnet && <div style={styles.row}><span style={styles.label}>Subnet:</span><span>{selected.subnet}</span></div>}
+          {selected.vpcId && <div style={styles.row}><span style={styles.label}>VPC:</span><span>{selected.vpcId}</span></div>}
           {selected.launchTime && <div style={styles.row}><span style={styles.label}>Launched:</span><span>{formatUptime(selected.launchTime)}</span></div>}
           {selected.volumes?.length > 0 && <div style={styles.row}><span style={styles.label}>Volumes:</span><span>{selected.volumes.map(v => `${v.device} ${v.size || '?'}GB ${v.type || ''}`).join(' · ')}</span></div>}
           {selected.id && <div style={styles.row}><span style={styles.label}>ID:</span><span>{selected.id}</span></div>}

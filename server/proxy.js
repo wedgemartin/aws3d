@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeVolumesCommand, RebootInstancesCommand, StopInstancesCommand } from '@aws-sdk/client-ec2'
+import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeVolumesCommand, DescribeSubnetsCommand, RebootInstancesCommand, StopInstancesCommand } from '@aws-sdk/client-ec2'
 import { EKSClient, ListClustersCommand, DescribeClusterCommand } from '@aws-sdk/client-eks'
 import { RDSClient, DescribeDBInstancesCommand } from '@aws-sdk/client-rds'
 import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
@@ -105,6 +105,8 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
         type: i.InstanceType,
         az: i.Placement?.AvailabilityZone,
         ip: i.PrivateIpAddress,
+        subnetId: i.SubnetId,
+        vpcId: i.VpcId,
         launchTime: i.LaunchTime,
         checks: `${passedChecks}/${totalChecks}`,
         checksStatus: checks?.system === 'initializing' || checks?.instance === 'initializing' ? 'initializing' : null,
@@ -113,7 +115,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
           volumeId: b.Ebs?.VolumeId,
           ...(volumeMap[b.Ebs?.VolumeId] || {}),
         })),
-        rootDevice: i.RootDeviceType, // ebs or instance-store
+        rootDevice: i.RootDeviceType,
         status: i.State?.Name === 'running'
           ? (checks?.system === 'ok' && checks?.instance === 'ok' ? 'healthy' : 'degraded')
           : i.State?.Name === 'stopped' ? 'down' : 'degraded',
@@ -176,7 +178,25 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       status: fs.LifeCycleState === 'available' ? 'healthy' : 'degraded',
     }))
 
-    return { ec2: ec2Instances, eks: eksDetails, rds: rdsNormalized, msk: mskNormalized, elb: elbNormalized, efs: efsNormalized, ts: Date.now() }
+    // Fetch subnet details for all unique subnet IDs
+    const subnetIds = [...new Set(ec2Instances.map(i => i.subnetId).filter(Boolean))]
+    const subnetMap = {}
+    if (subnetIds.length > 0) {
+      try {
+        const subRes = await ec2.send(new DescribeSubnetsCommand({ SubnetIds: subnetIds }))
+        for (const s of (subRes.Subnets || [])) {
+          subnetMap[s.SubnetId] = {
+            id: s.SubnetId,
+            cidr: s.CidrBlock,
+            az: s.AvailabilityZone,
+            vpcId: s.VpcId,
+            name: (s.Tags || []).find(t => t.Key === 'Name')?.Value || s.SubnetId,
+          }
+        }
+      } catch (e) { console.warn('DescribeSubnets failed:', e.message) }
+    }
+
+    return { ec2: ec2Instances, eks: eksDetails, rds: rdsNormalized, msk: mskNormalized, elb: elbNormalized, efs: efsNormalized, subnets: subnetMap, ts: Date.now() }
   }
 
   // On-demand: get target instances for a specific ELB

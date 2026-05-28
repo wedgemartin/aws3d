@@ -41,16 +41,17 @@ function guessRole(name) {
   return 'other'
 }
 
-export default function DataCenter({ onSelect, onPin }) {
+export default function DataCenter({ onSelect, onPin, viewMode }) {
   const [ec2, setEc2] = useState(defaultEc2)
   const [rds, setRds] = useState(defaultRds)
   const [eks, setEks] = useState(defaultEks)
   const [msk, setMsk] = useState(defaultMsk)
   const [elbs, setElbs] = useState([])
   const [efsList, setEfsList] = useState([])
+  const [subnets, setSubnets] = useState({})
   const [pinned, setPinned] = useState(null)
   const [elbTargets, setElbTargets] = useState([])
-  const [loaded, setLoaded] = useState(false) // on-demand target instances for pinned ELB
+  const [loaded, setLoaded] = useState(false)
 
   const poll = useCallback(async () => {
     try {
@@ -72,6 +73,7 @@ export default function DataCenter({ onSelect, onPin }) {
       if (data.msk?.length) setMsk(prev => ({ ...prev, status: data.msk[0]?.status || prev.status, name: data.msk[0]?.name || prev.name }))
       if (data.elb?.length) setElbs(data.elb.map(lb => ({ ...lb, az: azSuffix(lb.az) })))
       if (data.efs?.length) setEfsList(data.efs)
+      if (data.subnets) setSubnets(data.subnets)
       setLoaded(true)
     } catch (e) {
       console.warn('Poll failed:', e.message)
@@ -210,6 +212,11 @@ export default function DataCenter({ onSelect, onPin }) {
         const serversByRole = groupBy(azServers.filter(s => s.role !== 'eks-node'), 'role')
         const roles = Object.keys(serversByRole)
 
+        // Subnet grouping for network mode
+        const nonEksServers = azServers.filter(s => s.role !== 'eks-node')
+        const serversBySubnet = groupBy(nonEksServers, 'subnetId')
+        const subnetKeys = Object.keys(serversBySubnet)
+
         // EKS items — use actual EC2 nodes if available, otherwise show cluster name
         const eksNodes = azServers.filter(s => s.role === 'eks-node')
         const eksItems = eks.azs.includes(az.id)
@@ -285,13 +292,37 @@ export default function DataCenter({ onSelect, onPin }) {
               />
             )}
 
-            {/* EC2 racks by role */}
+            {/* EC2 racks — grouped by role or subnet depending on viewMode */}
             {(() => {
               const MAX_ROW_WIDTH = CAGE_WIDTH - 8
               let curX = -CAGE_WIDTH / 2 + 6
               let curZ = -CAGE_DEPTH / 2 + 3
-              return roles.map((role) => {
-                const count = serversByRole[role].length
+
+              const groups = viewMode === 'subnet' ? subnetKeys : roles
+              const getItems = (key) => viewMode === 'subnet' ? serversBySubnet[key] : serversByRole[key]
+              const getLabel = (key) => {
+                if (viewMode === 'subnet') {
+                  const sub = subnets[key]
+                  return sub ? (sub.name !== key ? sub.name : sub.cidr) : key?.slice(0, 12) || 'unknown'
+                }
+                return key
+              }
+              // Stable color per subnet for floor zones
+              const subnetColor = (key, idx) => {
+                if (viewMode !== 'subnet') return categoryColors.ec2.bright
+                const hue = (idx * 137.5) % 360
+                return `hsl(${hue}, 50%, 55%)`
+              }
+              const subnetDark = (key, idx) => {
+                if (viewMode !== 'subnet') return categoryColors.ec2.dark
+                const hue = (idx * 137.5) % 360
+                return `hsl(${hue}, 30%, 15%)`
+              }
+
+              return groups.map((key, gi) => {
+                const items = getItems(key)
+                if (!items?.length) return null
+                const count = items.length
                 const rackCols = Math.min(Math.ceil(count / MAX_PER_RACK), 10)
                 const rackWidth = rackCols * RACK_UNIT_WIDTH
 
@@ -304,19 +335,31 @@ export default function DataCenter({ onSelect, onPin }) {
                 curX += rackWidth + 1
 
                 return (
-                  <Rack
-                    key={role}
-                    position={pos}
-                    label={role}
-                    color={categoryColors.ec2.bright}
-                    darkColor={categoryColors.ec2.dark}
-                    category="ec2"
-                    items={serversByRole[role].map((s) => ({ id: s.id, name: s.name, status: s.status, ip: s.ip, type: s.type, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes }))}
-                    onSelect={handleSelect}
-                    onClick={handleClick}
-                    pinnedId={pinned?.id}
-                    highlightIds={interconnectNodes}
-                  />
+                  <group key={key}>
+                    {/* Floor zone highlight in subnet mode */}
+                    {viewMode === 'subnet' && (
+                      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[pos[0] + rackWidth / 2 - RACK_UNIT_WIDTH / 2, 0.02, pos[2]]}>
+                        <planeGeometry args={[rackWidth + 0.5, 4]} />
+                        <meshStandardMaterial color={subnetDark(key, gi)} transparent opacity={0.4} />
+                      </mesh>
+                    )}
+                    <Rack
+                      position={pos}
+                      label={getLabel(key)}
+                      color={subnetColor(key, gi)}
+                      darkColor={subnetDark(key, gi)}
+                      category="ec2"
+                      items={items.map((s) => ({
+                        id: s.id, name: s.name, status: s.status, ip: s.ip,
+                        type: s.type, launchTime: s.launchTime, checks: s.checks,
+                        volumes: s.volumes, subnet: subnets[s.subnetId]?.cidr || s.subnetId, vpcId: s.vpcId,
+                      }))}
+                      onSelect={handleSelect}
+                      onClick={handleClick}
+                      pinnedId={pinned?.id}
+                      highlightIds={interconnectNodes}
+                    />
+                  </group>
                 )
               })
             })()}
