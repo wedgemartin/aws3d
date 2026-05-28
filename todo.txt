@@ -1,6 +1,0 @@
-
-
-Show the info when you hover over the server.. shouldnt have to click on it.  Also, when you hover over the server in the rack, show its name on the server in the rack. Maybe we do this already but right now the whole rack is black except for the lights, unless i hover over a server then that server is highligthed but with no label. maybe a thin grey outline around all of the individual servers so theyre not just black on black
-
-labels are good, but for example 'mqtt' does not indicate that it is EC2.. so maybe we have color coded services.. still dark colors, but maybe dark purple for EC2, dark green for EKS.. etc.. if there is a coloring convention ( i think there is.. from the standard AWS iconography ) 
-
