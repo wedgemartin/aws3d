@@ -13,6 +13,7 @@
     "serve": "node bin/aws3d.js serve"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudtrail": "^3.712.0",
     "@aws-sdk/client-ec2": "^3.712.0",
     "@aws-sdk/client-efs": "^3.712.0",
     "@aws-sdk/client-eks": "^3.712.0",

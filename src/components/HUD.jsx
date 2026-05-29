@@ -45,12 +45,25 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
   const [proxyInfo, setProxyInfo] = useState(null)
   const [confirmAction, setConfirmAction] = useState(null) // { action: 'reboot'|'stop', instanceId, name }
   const [actionResult, setActionResult] = useState(null)
+  const [events, setEvents] = useState([])
 
   useEffect(() => {
     checkProxy().then(info => setProxyInfo(info))
     const id = setInterval(() => checkProxy().then(info => setProxyInfo(info)), 10000)
     return () => clearInterval(id)
   }, [])
+
+  // Fetch CloudTrail events when an EC2 instance is pinned
+  useEffect(() => {
+    if (pinned?.id?.startsWith('i-')) {
+      fetch(`${PROXY_URL}/api/ec2/events?id=${encodeURIComponent(pinned.id)}`)
+        .then(r => r.json())
+        .then(d => setEvents(d.events || []))
+        .catch(() => setEvents([]))
+    } else {
+      setEvents([])
+    }
+  }, [pinned?.id])
 
   // Keyboard shortcuts for EC2 actions
   useEffect(() => {
@@ -170,6 +183,16 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
           {isEc2 && connected && (
             <div style={styles.actions}>
               Ctrl+R Reboot · Ctrl+S Stop
+            </div>
+          )}
+          {events.length > 0 && (
+            <div style={{ marginTop: 6, borderTop: '1px solid #334466', paddingTop: 6 }}>
+              <div style={{ color: '#668899', marginBottom: 4 }}>Recent events:</div>
+              {events.map((ev, i) => (
+                <div key={i} style={{ fontSize: 10, color: '#8899aa', marginBottom: 2 }}>
+                  {formatUptime(ev.time)} — {ev.name} ({ev.user})
+                </div>
+              ))}
             </div>
           )}
         </div>

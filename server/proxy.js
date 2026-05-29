@@ -6,6 +6,7 @@ import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
 import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand } from '@aws-sdk/client-elastic-load-balancing-v2'
 import { EFSClient, DescribeFileSystemsCommand } from '@aws-sdk/client-efs'
 import { STSClient, GetCallerIdentityCommand, AssumeRoleCommand } from '@aws-sdk/client-sts'
+import { CloudTrailClient, LookupEventsCommand } from '@aws-sdk/client-cloudtrail'
 import { fromIni, fromEnv } from '@aws-sdk/credential-providers'
 
 export function createProxy({ profile, region, port = 9876, roleArn }) {
@@ -56,6 +57,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
   const elbv2 = new ElasticLoadBalancingV2Client(opts)
   const efs = new EFSClient(opts)
   const sts = new STSClient(opts)
+  const cloudtrail = new CloudTrailClient(opts)
 
   async function fetchStatus() {
     const [instances, instanceStatus, clusters, dbInstances, mskClusters, loadBalancers, fileSystems] = await Promise.all([
@@ -252,6 +254,25 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
         const targets = await fetchElbTargets(arn)
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ targets }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+    } else if (url.pathname === '/api/ec2/events') {
+      const instanceId = url.searchParams.get('id')
+      if (!instanceId) { res.writeHead(400); res.end('Missing ?id='); return }
+      try {
+        const resp = await cloudtrail.send(new LookupEventsCommand({
+          LookupAttributes: [{ AttributeKey: 'ResourceName', AttributeValue: instanceId }],
+          MaxResults: 5,
+        }))
+        const events = (resp.Events || []).map(e => ({
+          time: e.EventTime,
+          name: e.EventName,
+          user: e.Username,
+        }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ events }))
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: e.message }))

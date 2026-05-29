@@ -20,7 +20,7 @@ export default function Cage({ width, depth, label }) {
       </lineSegments>
       <mesh position={[0, height / 2, 0]}>
         <boxGeometry args={[width, height, depth]} />
-        <meshStandardMaterial color="#1a2244" transparent opacity={wallOpacity} />
+        <meshStandardMaterial color="#1a2244" transparent opacity={wallOpacity} depthWrite={false} />
       </mesh>
 
       {/* Label */}
