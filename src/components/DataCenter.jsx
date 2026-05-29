@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
+import * as THREE from 'three'
+import { Text } from '@react-three/drei'
 import { azs as defaultAzs, ec2Servers as defaultEc2, rdsInstances as defaultRds, eksCluster as defaultEks, mskCluster as defaultMsk, categoryColors } from '../data/infrastructure'
 import { fetchInfraStatus } from '../data/fetchStatus'
 import Cage from './Cage'
@@ -6,8 +8,8 @@ import Rack from './Rack'
 import Interconnect from './Interconnect'
 
 // Layout constants
-const CAGE_WIDTH = 40
-const CAGE_DEPTH = 50
+const CAGE_WIDTH = 30
+const CAGE_DEPTH = 30
 const CAGE_GAP = 8
 const RACK_UNIT_WIDTH = 2.8
 const MAX_PER_RACK = 12
@@ -236,6 +238,72 @@ export default function DataCenter({ onSelect, onPin, viewMode }) {
         return (
           <group key={az.id} position={[x, 0, 0]}>
             <Cage width={CAGE_WIDTH} depth={CAGE_DEPTH} label={az.label} />
+
+            {/* VPC floor zones */}
+            {(() => {
+              const vpcIds = [...new Set(azServers.map(s => s.vpcId).filter(Boolean))]
+              const vpcCount = vpcIds.length
+              if (vpcCount === 0) return null
+              const zoneWidth = (CAGE_WIDTH - 2) / vpcCount
+              return vpcIds.map((vpcId, vi) => {
+                const hue = (vi * 220) % 360
+                const isNetMode = viewMode === 'subnet'
+                return (
+                  <group key={vpcId}>
+                    {/* Floor zone */}
+                    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[
+                      -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
+                      0.03,
+                      0
+                    ]}>
+                      <planeGeometry args={[zoneWidth - 0.5, CAGE_DEPTH - 2]} />
+                      <meshStandardMaterial
+                        color={`hsl(${hue}, 40%, 12%)`}
+                        transparent
+                        opacity={isNetMode ? 0.6 : 0.2}
+                      />
+                    </mesh>
+                    {/* VPC border */}
+                    <lineSegments position={[
+                      -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
+                      0.04,
+                      0
+                    ]} rotation={[-Math.PI / 2, 0, 0]}>
+                      <edgesGeometry args={[new THREE.PlaneGeometry(zoneWidth - 0.5, CAGE_DEPTH - 2)]} />
+                      <lineBasicMaterial color={`hsl(${hue}, 50%, ${isNetMode ? 45 : 25}%)`} />
+                    </lineSegments>
+                    {/* VPC label on floor — front */}
+                    <Text
+                      rotation={[-Math.PI / 2, 0, 0]}
+                      position={[
+                        -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
+                        0.05,
+                        -CAGE_DEPTH / 2 + 2
+                      ]}
+                      fontSize={isNetMode ? 0.8 : 0.5}
+                      color={`hsl(${hue}, 50%, ${isNetMode ? 55 : 30}%)`}
+                      anchorX="center"
+                    >
+                      {vpcId.slice(0, 12)}
+                    </Text>
+                    {/* VPC label on floor — back */}
+                    <Text
+                      rotation={[-Math.PI / 2, 0, 0]}
+                      position={[
+                        -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
+                        0.05,
+                        CAGE_DEPTH / 2 - 2
+                      ]}
+                      fontSize={isNetMode ? 0.8 : 0.5}
+                      color={`hsl(${hue}, 50%, ${isNetMode ? 55 : 30}%)`}
+                      anchorX="center"
+                    >
+                      {vpcId.slice(0, 12)}
+                    </Text>
+                  </group>
+                )
+              })
+            })()}
 
             {/* EKS rack */}
             {eksItems.length > 0 && (
