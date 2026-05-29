@@ -57,11 +57,13 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
     const onKey = (e) => {
       if (confirmAction) {
         if (e.key === 'y' || e.key === 'Y') { executeAction(confirmAction); setConfirmAction(null) }
-        if (e.key === 'n' || e.key === 'N' || e.key === 'Escape') setConfirmAction(null)
+        if (e.key === 'x' || e.key === 'X') setConfirmAction(null)
         return
       }
       // Only trigger on pinned EC2 instances (have an instance ID starting with i-)
+      // Require Ctrl modifier to avoid conflict with WASD movement
       if (!pinned || !pinned.id?.startsWith('i-')) return
+      if (!e.ctrlKey) return
       if (e.key === 'r') setConfirmAction({ action: 'reboot', instanceId: pinned.id, name: pinned.name })
       if (e.key === 's') setConfirmAction({ action: 'stop', instanceId: pinned.id, name: pinned.name })
     }
@@ -138,7 +140,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
           <div style={{ color: '#888' }}>{confirmAction.instanceId}</div>
           <div style={{ marginTop: 16 }}>
             <span style={{ color: '#44ff44' }}>[Y]</span> Confirm &nbsp;&nbsp;
-            <span style={{ color: '#ff4444' }}>[N]</span> Cancel
+            <span style={{ color: '#ff4444' }}>[X]</span> Cancel
           </div>
         </div>
       )}
@@ -167,7 +169,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
           {selected.id && <div style={styles.row}><span style={styles.label}>ID:</span><span>{selected.id}</span></div>}
           {isEc2 && connected && (
             <div style={styles.actions}>
-              [R] Reboot · [S] Stop
+              Ctrl+R Reboot · Ctrl+S Stop
             </div>
           )}
         </div>
