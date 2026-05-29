@@ -42,24 +42,23 @@ export const rdsInstances = [
 ]
 
 export const ec2Servers = [
-  // Infrastructure
-  { id: 'vpn-01', name: 'vpn-01', role: 'vpn', ip: '10.0.101.10', az: 'az-a', subnet: 'public', status: Status.HEALTHY },
-  { id: 'bastion-01', name: 'bastion-01', role: 'vpn', ip: '10.0.101.20', az: 'az-b', subnet: 'public', status: Status.HEALTHY },
-  // API tier
-  { id: 'api-01', name: 'api-01', role: 'api', ip: '10.0.1.10', az: 'az-a', subnet: 'private', status: Status.HEALTHY },
-  { id: 'api-02', name: 'api-02', role: 'api', ip: '10.0.2.10', az: 'az-b', subnet: 'private', status: Status.HEALTHY },
-  { id: 'api-03', name: 'api-03', role: 'api', ip: '10.0.1.11', az: 'az-a', subnet: 'private', status: Status.HEALTHY },
-  // Workers
-  { id: 'worker-01', name: 'worker-01', role: 'worker', ip: '10.0.1.20', az: 'az-a', subnet: 'private', status: Status.HEALTHY },
-  { id: 'worker-02', name: 'worker-02', role: 'worker', ip: '10.0.2.20', az: 'az-b', subnet: 'private', status: Status.HEALTHY },
-  { id: 'worker-03', name: 'worker-03', role: 'worker', ip: '10.0.1.21', az: 'az-a', subnet: 'private', status: Status.HEALTHY },
-  { id: 'worker-04', name: 'worker-04', role: 'worker', ip: '10.0.2.21', az: 'az-b', subnet: 'private', status: Status.HEALTHY },
-  // Cache / messaging
-  { id: 'redis-01', name: 'redis-01', role: 'cache', ip: '10.0.1.30', az: 'az-a', subnet: 'private', status: Status.HEALTHY },
-  { id: 'redis-02', name: 'redis-02', role: 'cache', ip: '10.0.2.30', az: 'az-b', subnet: 'private', status: Status.HEALTHY },
-  // Monitoring
-  { id: 'monitor-01', name: 'monitor-01', role: 'monitoring', ip: '10.0.1.40', az: 'az-a', subnet: 'private', status: Status.HEALTHY },
-  { id: 'logging-01', name: 'logging-01', role: 'monitoring', ip: '10.0.2.40', az: 'az-b', subnet: 'private', status: Status.HEALTHY },
+  // VPC: vpc-app (main application VPC)
+  { id: 'vpn-01', name: 'vpn-01', role: 'vpn', ip: '10.0.101.10', az: 'az-a', subnet: 'public', vpcId: 'vpc-app', subnetId: 'subnet-pub-a', status: Status.HEALTHY },
+  { id: 'bastion-01', name: 'bastion-01', role: 'vpn', ip: '10.0.101.20', az: 'az-b', subnet: 'public', vpcId: 'vpc-app', subnetId: 'subnet-pub-b', status: Status.HEALTHY },
+  { id: 'api-01', name: 'api-01', role: 'api', ip: '10.0.1.10', az: 'az-a', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-a', status: Status.HEALTHY },
+  { id: 'api-02', name: 'api-02', role: 'api', ip: '10.0.2.10', az: 'az-b', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-b', status: Status.HEALTHY },
+  { id: 'api-03', name: 'api-03', role: 'api', ip: '10.0.1.11', az: 'az-a', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-a', status: Status.HEALTHY },
+  { id: 'worker-01', name: 'worker-01', role: 'worker', ip: '10.0.1.20', az: 'az-a', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-a', status: Status.HEALTHY },
+  { id: 'worker-02', name: 'worker-02', role: 'worker', ip: '10.0.2.20', az: 'az-b', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-b', status: Status.HEALTHY },
+  { id: 'worker-03', name: 'worker-03', role: 'worker', ip: '10.0.1.21', az: 'az-a', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-a', status: Status.HEALTHY },
+  { id: 'worker-04', name: 'worker-04', role: 'worker', ip: '10.0.2.21', az: 'az-b', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-b', status: Status.HEALTHY },
+  { id: 'redis-01', name: 'redis-01', role: 'cache', ip: '10.0.1.30', az: 'az-a', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-a', status: Status.HEALTHY },
+  { id: 'redis-02', name: 'redis-02', role: 'cache', ip: '10.0.2.30', az: 'az-b', subnet: 'private', vpcId: 'vpc-app', subnetId: 'subnet-priv-b', status: Status.HEALTHY },
+  // VPC: vpc-shared (shared services VPC)
+  { id: 'monitor-01', name: 'monitor-01', role: 'monitoring', ip: '10.1.1.10', az: 'az-a', subnet: 'private', vpcId: 'vpc-shared', subnetId: 'subnet-shared-a', status: Status.HEALTHY },
+  { id: 'logging-01', name: 'logging-01', role: 'monitoring', ip: '10.1.2.10', az: 'az-b', subnet: 'private', vpcId: 'vpc-shared', subnetId: 'subnet-shared-b', status: Status.HEALTHY },
+  { id: 'dns-01', name: 'dns-01', role: 'dns', ip: '10.1.1.20', az: 'az-a', subnet: 'private', vpcId: 'vpc-shared', subnetId: 'subnet-shared-a', status: Status.HEALTHY },
+  { id: 'dns-02', name: 'dns-02', role: 'dns', ip: '10.1.2.20', az: 'az-b', subnet: 'private', vpcId: 'vpc-shared', subnetId: 'subnet-shared-b', status: Status.HEALTHY },
 ]
 
 export const connections = [
