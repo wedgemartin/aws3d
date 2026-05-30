@@ -46,7 +46,8 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
   const [confirmAction, setConfirmAction] = useState(null) // { action: 'reboot'|'stop', instanceId, name }
   const [actionResult, setActionResult] = useState(null)
   const [events, setEvents] = useState([])
-
+  const [sgData, setSgData] = useState(null)
+  const [naclData, setNaclData] = useState(null)
   useEffect(() => {
     checkProxy().then(info => setProxyInfo(info))
     const id = setInterval(() => checkProxy().then(info => setProxyInfo(info)), 10000)
@@ -55,6 +56,8 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
 
   // Fetch CloudTrail events when an EC2 instance is pinned
   useEffect(() => {
+    setSgData(null)
+    setNaclData(null)
     if (pinned?.id?.startsWith('i-')) {
       fetch(`${PROXY_URL}/api/ec2/events?id=${encodeURIComponent(pinned.id)}`)
         .then(r => r.json())
@@ -78,7 +81,30 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
       if (!pinned || !pinned.id?.startsWith('i-')) return
       if (!e.ctrlKey) return
       if (e.key === 'r') setConfirmAction({ action: 'reboot', instanceId: pinned.id, name: pinned.name })
-      if (e.key === 's') setConfirmAction({ action: 'stop', instanceId: pinned.id, name: pinned.name })
+      if (e.key === 's') {
+        const action = pinned.status === 'down' ? 'start' : 'stop'
+        setConfirmAction({ action, instanceId: pinned.id, name: pinned.name })
+      }
+      if (e.key === 'g') {
+        e.preventDefault()
+        if (sgData) { setSgData(null); return } // toggle off
+        if (pinned.securityGroups?.length) {
+          fetch(`${PROXY_URL}/api/ec2/sg?ids=${pinned.securityGroups.join(',')}`)
+            .then(r => r.json())
+            .then(d => { setSgData(d.groups || null); setNaclData(null) })
+            .catch(() => {})
+        }
+      }
+      if (e.key === 'n') {
+        e.preventDefault()
+        if (naclData) { setNaclData(null); return } // toggle off
+        if (pinned.subnetId) {
+          fetch(`${PROXY_URL}/api/ec2/nacl?subnet=${pinned.subnetId}`)
+            .then(r => r.json())
+            .then(d => { setNaclData(d.nacls || null); setSgData(null) })
+            .catch(() => {})
+        }
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -127,8 +153,9 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
 
       {/* Working spinner */}
       {fetching && (
-        <div style={{ position: 'fixed', bottom: 12, right: 12, fontFamily: 'monospace', fontSize: 11, color: '#8888aa', pointerEvents: 'none' }}>
-          ⟳ fetching...
+        <div style={{ position: 'fixed', bottom: 16, right: 16, fontFamily: 'monospace', fontSize: 13, color: '#66aaff', pointerEvents: 'none', background: 'rgba(10,10,30,0.85)', padding: '6px 12px', borderRadius: 4, border: '1px solid #334466' }}>
+          <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite' }}>⟳</span> Fetching...
+          <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
         </div>
       )}
 
@@ -142,7 +169,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
       )}
       {locked && (
         <div style={{ position: 'fixed', top: 20, left: 20, ...styles.hint }}>
-          WASD move · Mouse look · Q/E up/down · Shift sprint · N toggle view · ESC exit
+          WASD move · Mouse look · Q/E up/down · Shift sprint · V toggle view · ESC exit
           <div style={{ marginTop: 4, color: viewMode === 'subnet' ? '#43a047' : '#aaccff' }}>
             View: {viewMode === 'subnet' ? '🔌 Network (subnet)' : '📦 Role'}
           </div>
@@ -154,7 +181,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
       {confirmAction && (
         <div style={styles.confirm}>
           <div style={{ fontSize: 16, marginBottom: 8 }}>
-            {confirmAction.action === 'reboot' ? '🔄 Reboot' : '⏹ Stop'} instance?
+            {confirmAction.action === 'reboot' ? '🔄 Reboot' : confirmAction.action === 'start' ? '▶ Start' : '⏹ Stop'} instance?
           </div>
           <div style={{ color: '#ffffff', marginBottom: 12 }}>{confirmAction.name}</div>
           <div style={{ color: '#888' }}>{confirmAction.instanceId}</div>
@@ -180,7 +207,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {selected.ip && <div style={styles.row}><span style={styles.label}>IP:</span><span>{selected.ip}</span></div>}
           {selected.endpoint && <div style={styles.row}><span style={styles.label}>Endpoint:</span><span>{selected.endpoint}</span></div>}
           {selected.dnsName && <div style={styles.row}><span style={styles.label}>DNS:</span><span>{selected.dnsName}</span></div>}
-          <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.status}</span></div>
+          <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.status === 'down' ? 'stopped' : selected.status}</span></div>
           {selected.checks && <div style={styles.row}><span style={styles.label}>Checks:</span><span>{selected.checks}</span></div>}
           {selected.subnet && <div style={styles.row}><span style={styles.label}>Subnet:</span><span>{selected.subnet}</span></div>}
           {selected.vpcId && <div style={styles.row}><span style={styles.label}>VPC:</span><span>{selected.vpcId}</span></div>}
@@ -189,7 +216,35 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {selected.id && <div style={styles.row}><span style={styles.label}>ID:</span><span>{selected.id}</span></div>}
           {isEc2 && connected && (
             <div style={styles.actions}>
-              Ctrl+R Reboot · Ctrl+S Stop
+              Ctrl+R Reboot · {selected.status === 'down' ? 'Ctrl+S Start' : 'Ctrl+S Stop'} · Ctrl+G SG · Ctrl+N NACL
+            </div>
+          )}
+          {sgData && (
+            <div style={{ marginTop: 6, borderTop: '1px solid #334466', paddingTop: 6 }}>
+              {sgData.map(sg => (
+                <div key={sg.id}>
+                  <div style={{ color: '#66aaff', marginBottom: 4 }}>SG: {sg.id}</div>
+                  {sg.inbound.map((r, i) => (
+                    <div key={i} style={{ fontSize: 10, color: '#88ccaa', marginBottom: 2 }}>
+                      {r.protocol === 'all' ? 'ALL' : `${r.protocol} :${r.fromPort}${r.toPort !== r.fromPort ? `-${r.toPort}` : ''}`} ← {r.sources.join(', ')}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+          {naclData && (
+            <div style={{ marginTop: 6, borderTop: '1px solid #334466', paddingTop: 6 }}>
+              {naclData.map(nacl => (
+                <div key={nacl.id}>
+                  <div style={{ color: '#66aaff', marginBottom: 4 }}>NACL: {nacl.id}</div>
+                  {nacl.inbound.map((r, i) => (
+                    <div key={i} style={{ fontSize: 10, color: r.action === 'allow' ? '#88ccaa' : '#ff8888', marginBottom: 2 }}>
+                      #{r.rule} {r.action} {r.protocol === 'all' ? 'ALL' : `${r.protocol} :${r.fromPort || '*'}${r.toPort && r.toPort !== r.fromPort ? `-${r.toPort}` : ''}`} ← {r.cidr}
+                    </div>
+                  ))}
+                </div>
+              ))}
             </div>
           )}
           {events.length > 0 && (
