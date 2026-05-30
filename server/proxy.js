@@ -3,7 +3,7 @@ import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, Des
 import { EKSClient, ListClustersCommand, DescribeClusterCommand } from '@aws-sdk/client-eks'
 import { RDSClient, DescribeDBInstancesCommand } from '@aws-sdk/client-rds'
 import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
-import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand } from '@aws-sdk/client-elastic-load-balancing-v2'
+import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand, DescribeListenersCommand, DescribeRulesCommand } from '@aws-sdk/client-elastic-load-balancing-v2'
 import { EFSClient, DescribeFileSystemsCommand } from '@aws-sdk/client-efs'
 import { STSClient, GetCallerIdentityCommand, AssumeRoleCommand } from '@aws-sdk/client-sts'
 import { CloudTrailClient, LookupEventsCommand } from '@aws-sdk/client-cloudtrail'
@@ -15,6 +15,11 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
   // If --role-arn is provided, we assume the role ourselves and auto-refresh
   let assumedCreds = null
   let assumedExpiry = 0
+
+  function forceRefreshCreds() {
+    assumedCreds = null
+    assumedExpiry = 0
+  }
 
   function buildCredentialProvider() {
     if (roleArn) {
@@ -203,20 +208,63 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
 
   // On-demand: get target instances for a specific ELB
   async function fetchElbTargets(lbArn) {
+    // Get listeners
+    const listenerRes = await elbv2.send(new DescribeListenersCommand({ LoadBalancerArn: lbArn }))
+
+    // Get all target groups for this LB and their health
     const tgRes = await elbv2.send(new DescribeTargetGroupsCommand({ LoadBalancerArn: lbArn }))
-    const targets = []
+    const tgMap = {}
     for (const tg of (tgRes.TargetGroups || [])) {
       const health = await elbv2.send(new DescribeTargetHealthCommand({ TargetGroupArn: tg.TargetGroupArn }))
-      for (const t of (health.TargetHealthDescriptions || [])) {
-        targets.push({
+      tgMap[tg.TargetGroupArn] = {
+        name: tg.TargetGroupName,
+        port: tg.Port,
+        targets: (health.TargetHealthDescriptions || []).map(t => ({
           instanceId: t.Target?.Id,
           port: t.Target?.Port,
-          health: t.TargetHealth?.State, // healthy, unhealthy, draining, unused
-          targetGroup: tg.TargetGroupName,
-        })
+          health: t.TargetHealth?.State,
+        })),
       }
     }
-    return targets
+
+    // Build port groups from listeners + rules
+    const portGroups = []
+    for (const listener of (listenerRes.Listeners || [])) {
+      const port = listener.Port
+      const protocol = listener.Protocol
+      const defaultAction = listener.DefaultActions?.[0]
+
+      // Check if default action is a redirect (like HTTP→HTTPS)
+      if (defaultAction?.Type === 'redirect') {
+        portGroups.push({ listenerPort: port, protocol, path: '(redirect)', targetGroup: 'redirect', targetPort: null, targets: [] })
+        continue
+      }
+
+      // Get rules for this listener
+      const rulesRes = await elbv2.send(new DescribeRulesCommand({ ListenerArn: listener.ListenerArn })).catch(() => ({ Rules: [] }))
+      const rules = (rulesRes.Rules || []).filter(r => !r.IsDefault)
+
+      // Add each rule as a port group
+      for (const rule of rules) {
+        const tgArn = rule.Actions?.[0]?.TargetGroupArn
+        const tg = tgMap[tgArn]
+        const pathCondition = rule.Conditions?.find(c => c.Field === 'path-pattern')
+        const hostCondition = rule.Conditions?.find(c => c.Field === 'host-header')
+        const path = pathCondition?.Values?.[0] || hostCondition?.Values?.[0] || ''
+        if (tg) {
+          portGroups.push({ listenerPort: port, protocol, path, targetGroup: tg.name, targetPort: tg.port, targets: tg.targets })
+        }
+      }
+
+      // Add default action as fallback
+      const defaultTg = tgMap[defaultAction?.TargetGroupArn]
+      if (defaultTg) {
+        portGroups.push({ listenerPort: port, protocol, path: '(default)', targetGroup: defaultTg.name, targetPort: defaultTg.port, targets: defaultTg.targets })
+      }
+    }
+
+    const allTargets = Object.values(tgMap).flatMap(tg => tg.targets.map(t => ({ ...t, targetGroup: tg.name })))
+    return { portGroups, targets: allTargets }
   }
 
   function readBody(req) {
@@ -251,9 +299,9 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       const arn = url.searchParams.get('arn')
       if (!arn) { res.writeHead(400); res.end('Missing ?arn='); return }
       try {
-        const targets = await fetchElbTargets(arn)
+        const data = await fetchElbTargets(arn)
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ targets }))
+        res.end(JSON.stringify(data))
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: e.message }))
@@ -282,11 +330,36 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       try {
         const identity = await sts.send(new GetCallerIdentityCommand({}))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account }))
+        res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account, canRefresh: !!roleArn }))
       } catch (e) {
         const expired = e.name === 'ExpiredTokenException' || e.message?.includes('expired') || e.name === 'InvalidIdentityToken'
+        // Auto-refresh if we have a role ARN
+        if (expired && roleArn) {
+          forceRefreshCreds()
+          try {
+            await sts.send(new GetCallerIdentityCommand({}))
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: true, refreshed: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, canRefresh: true }))
+            return
+          } catch {}
+        }
         res.writeHead(expired ? 401 : 200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: !expired, expired, error: expired ? 'Credentials expired' : null, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region }))
+        res.end(JSON.stringify({ ok: !expired, expired, error: expired ? 'Credentials expired' : null, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, canRefresh: !!roleArn }))
+      }
+    } else if (url.pathname === '/api/refresh' && req.method === 'POST') {
+      if (!roleArn) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'No --role-arn configured, cannot refresh' }))
+        return
+      }
+      forceRefreshCreds()
+      try {
+        const identity = await sts.send(new GetCallerIdentityCommand({}))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, account: identity.Account }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
       }
     } else if (url.pathname === '/api/ec2/reboot' && req.method === 'POST') {
       const body = await readBody(req)

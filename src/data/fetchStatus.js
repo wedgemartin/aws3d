@@ -13,8 +13,16 @@ let proxyAvailable = null // null = unknown, true/false after first check
 
 export async function checkProxy() {
   try {
-    const res = await fetch(`${PROXY_URL}/api/health`, { signal: AbortSignal.timeout(1000) })
+    const res = await fetch(`${PROXY_URL}/api/health`, { signal: AbortSignal.timeout(2000) })
     const data = await res.json()
+    // Auto-refresh if expired and proxy supports it
+    if (data.expired && data.canRefresh) {
+      await fetch(`${PROXY_URL}/api/refresh`, { method: 'POST' })
+      const retry = await fetch(`${PROXY_URL}/api/health`, { signal: AbortSignal.timeout(2000) })
+      const retryData = await retry.json()
+      proxyAvailable = retryData.ok === true
+      return retryData
+    }
     proxyAvailable = data.ok === true
     return data
   } catch {
