@@ -41,7 +41,7 @@ const styles = {
   actions: { marginTop: 8, color: '#668899', fontSize: 11 },
 }
 
-export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
+export default function HUD({ selected, onClose, locked, pinned, viewMode, dataLoaded, fetching }) {
   const [proxyInfo, setProxyInfo] = useState(null)
   const [confirmAction, setConfirmAction] = useState(null) // { action: 'reboot'|'stop', instanceId, name }
   const [actionResult, setActionResult] = useState(null)
@@ -104,7 +104,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
 
   const connected = proxyInfo?.ok === true
   const expired = proxyInfo?.expired === true
-  const loading = proxyInfo === null
+  const loading = proxyInfo === null || (connected && !dataLoaded)
   const isEc2 = pinned?.id?.startsWith('i-')
 
   return (
@@ -117,13 +117,20 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode }) {
         color: loading ? '#8888aa' : expired ? '#ff6666' : connected ? '#00ff66' : '#ffcc00',
       }}>
         {loading
-          ? '◌ Connecting...'
+          ? '◌ Loading...'
           : expired
             ? '⚠ Credentials Expired — restart proxy with fresh creds'
             : connected
               ? `● Live — ${proxyInfo.profile} (${proxyInfo.region})`
               : '○ Sample Data'}
       </div>
+
+      {/* Working spinner */}
+      {fetching && (
+        <div style={{ position: 'fixed', bottom: 12, right: 12, fontFamily: 'monospace', fontSize: 11, color: '#8888aa', pointerEvents: 'none' }}>
+          ⟳ fetching...
+        </div>
+      )}
 
       {!locked && (
         <div style={{ ...styles.panel, position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center', fontSize: 14 }}>

@@ -10,10 +10,11 @@ const statusColors = {
   [Status.UNKNOWN]: '#666666',
 }
 
-export default function ServerBox({ position, data, color, darkColor, onSelect, onClick, isPinned, isHighlighted }) {
+export default function ServerBox({ position, data, color, darkColor, onSelect, onClick, isPinned, isHighlighted, highlightColor }) {
   const ledRef = useRef()
   const [hovered, setHovered] = useState(false)
   const active = hovered || isPinned || isHighlighted
+  const activeColor = highlightColor || color
 
   useFrame(({ clock }) => {
     if (!ledRef.current) return
@@ -37,10 +38,10 @@ export default function ServerBox({ position, data, color, darkColor, onSelect, 
       <mesh castShadow>
         <boxGeometry args={[2, 0.45, 0.3]} />
         <meshStandardMaterial
-          color={active ? color : (darkColor || '#1a1a2e')}
+          color={active ? activeColor : (darkColor || '#1a1a2e')}
           metalness={0.7}
           roughness={0.3}
-          emissive={active ? color : '#000000'}
+          emissive={active ? activeColor : '#000000'}
           emissiveIntensity={active ? 0.3 : 0}
         />
       </mesh>
@@ -48,7 +49,7 @@ export default function ServerBox({ position, data, color, darkColor, onSelect, 
       {/* Thin outline */}
       <lineSegments>
         <edgesGeometry args={[new THREE.BoxGeometry(2, 0.45, 0.3)]} />
-        <lineBasicMaterial color={active ? color : '#333344'} />
+        <lineBasicMaterial color={active ? activeColor : '#333344'} />
       </lineSegments>
 
       {/* Name label */}

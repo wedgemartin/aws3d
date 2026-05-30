@@ -9,7 +9,9 @@ export default function App() {
   const [selected, setSelected] = useState(null)
   const [pinned, setPinned] = useState(null)
   const [locked, setLocked] = useState(false)
-  const [viewMode, setViewMode] = useState('role') // 'role' or 'subnet'
+  const [viewMode, setViewMode] = useState('role')
+  const [dataLoaded, setDataLoaded] = useState(false)
+  const [fetching, setFetching] = useState(false)
 
   useEffect(() => {
     const onKey = (e) => {
@@ -29,12 +31,12 @@ export default function App() {
         <directionalLight position={[20, 30, 10]} intensity={0.8} castShadow />
         <pointLight position={[-20, 15, -10]} intensity={0.4} color="#4488ff" />
         <Stars radius={100} depth={50} count={2000} factor={4} fade />
-        <DataCenter onSelect={setSelected} onPin={setPinned} viewMode={viewMode} />
+        <DataCenter onSelect={setSelected} onPin={setPinned} viewMode={viewMode} onLoaded={() => setDataLoaded(true)} onFetching={setFetching} />
         <PointerLockControls onLock={() => setLocked(true)} onUnlock={() => setLocked(false)} />
         <WASDControls />
         <gridHelper args={[100, 50, '#1a1a2e', '#1a1a2e']} />
       </Canvas>
-      <HUD selected={selected} onClose={() => setSelected(null)} locked={locked} pinned={pinned} viewMode={viewMode} />
+      <HUD selected={selected} onClose={() => setSelected(null)} locked={locked} pinned={pinned} viewMode={viewMode} dataLoaded={dataLoaded} fetching={fetching} />
     </>
   )
 }

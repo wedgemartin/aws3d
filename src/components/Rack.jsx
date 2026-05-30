@@ -4,7 +4,7 @@ import { Text } from '@react-three/drei'
 import ServerBox from './ServerBox'
 import ManagedServiceBox from './ManagedServiceBox'
 
-export default function Rack({ position, label, color, darkColor, category, items, onSelect, onClick, pinnedId, highlightIds }) {
+export default function Rack({ position, label, color, darkColor, category, items, onSelect, onClick, pinnedId, highlightIds, highlightColors }) {
   const MAX_PER_RACK = 12
   const MAX_COLS = 10
   const rackWidth = 2.5
@@ -76,6 +76,7 @@ export default function Rack({ position, label, color, darkColor, category, item
                   onClick={onClick}
                   isPinned={pinnedId === item.id}
                   isHighlighted={highlightIds?.includes(item.id)}
+                  highlightColor={highlightColors?.[item.id]}
                 />
               ) : (
                 <ServerBox
@@ -88,6 +89,7 @@ export default function Rack({ position, label, color, darkColor, category, item
                   onClick={onClick}
                   isPinned={pinnedId === item.id}
                   isHighlighted={highlightIds?.includes(item.id)}
+                  highlightColor={highlightColors?.[item.id]}
                 />
               )
             )}
