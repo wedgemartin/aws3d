@@ -22,8 +22,10 @@ export default function ServerBox({ position, data, color, darkColor, onSelect, 
     const blink = data.status === Status.HEALTHY
       ? 0.8 + Math.sin(t * 2 + Math.random() * 0.1) * 0.2
       : data.status === Status.DOWN
-        ? Math.sin(t * 6) > 0 ? 1 : 0.1
-        : 0.6
+        ? 0.15 // solid dim — instance is stopped
+        : data.status === Status.DEGRADED
+          ? Math.sin(t * 4) > 0 ? 0.8 : 0.2 // pulsing amber
+          : 0.3
     ledRef.current.material.emissiveIntensity = blink
   })
 

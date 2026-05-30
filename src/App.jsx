@@ -15,7 +15,8 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'n' || e.key === 'N') {
+      if (e.ctrlKey) return // don't toggle view when using Ctrl shortcuts
+      if (e.key === 'v' || e.key === 'V') {
         setViewMode(m => m === 'role' ? 'subnet' : 'role')
       }
     }

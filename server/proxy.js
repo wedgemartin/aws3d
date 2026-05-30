@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeVolumesCommand, DescribeSubnetsCommand, RebootInstancesCommand, StopInstancesCommand } from '@aws-sdk/client-ec2'
+import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeVolumesCommand, DescribeSubnetsCommand, DescribeSecurityGroupsCommand, DescribeNetworkAclsCommand, RebootInstancesCommand, StopInstancesCommand, StartInstancesCommand } from '@aws-sdk/client-ec2'
 import { EKSClient, ListClustersCommand, DescribeClusterCommand } from '@aws-sdk/client-eks'
 import { RDSClient, DescribeDBInstancesCommand } from '@aws-sdk/client-rds'
 import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
@@ -114,6 +114,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
         ip: i.PrivateIpAddress,
         subnetId: i.SubnetId,
         vpcId: i.VpcId,
+        securityGroups: (i.SecurityGroups || []).map(sg => sg.GroupId),
         launchTime: i.LaunchTime,
         checks: `${passedChecks}/${totalChecks}`,
         checksStatus: checks?.system === 'initializing' || checks?.instance === 'initializing' ? 'initializing' : null,
@@ -312,15 +313,68 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       try {
         const resp = await cloudtrail.send(new LookupEventsCommand({
           LookupAttributes: [{ AttributeKey: 'ResourceName', AttributeValue: instanceId }],
-          MaxResults: 5,
+          MaxResults: 50,
         }))
-        const events = (resp.Events || []).map(e => ({
-          time: e.EventTime,
-          name: e.EventName,
-          user: e.Username,
-        }))
+        const ec2Events = ['RunInstances', 'StartInstances', 'StopInstances', 'RebootInstances', 'TerminateInstances', 'ModifyInstanceAttribute', 'AttachVolume', 'DetachVolume', 'CreateTags', 'AssociateAddress']
+        const events = (resp.Events || [])
+          .filter(e => ec2Events.includes(e.EventName))
+          .slice(0, 5)
+          .map(e => ({
+            time: e.EventTime,
+            name: e.EventName,
+            user: e.Username,
+          }))
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ events }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+    } else if (url.pathname === '/api/ec2/sg') {
+      const sgIds = url.searchParams.get('ids')?.split(',')
+      if (!sgIds?.length) { res.writeHead(400); res.end('Missing ?ids=sg-xxx,sg-yyy'); return }
+      try {
+        const resp = await ec2.send(new DescribeSecurityGroupsCommand({ GroupIds: sgIds }))
+        const groups = (resp.SecurityGroups || []).map(sg => ({
+          id: sg.GroupId,
+          name: sg.GroupName,
+          description: sg.Description,
+          inbound: (sg.IpPermissions || []).map(r => ({
+            protocol: r.IpProtocol === '-1' ? 'all' : r.IpProtocol,
+            fromPort: r.FromPort,
+            toPort: r.ToPort,
+            sources: [
+              ...(r.IpRanges || []).map(ip => ip.CidrIp),
+              ...(r.UserIdGroupPairs || []).map(g => g.GroupId),
+            ],
+          })),
+        }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ groups }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+    } else if (url.pathname === '/api/ec2/nacl') {
+      const subnetId = url.searchParams.get('subnet')
+      if (!subnetId) { res.writeHead(400); res.end('Missing ?subnet='); return }
+      try {
+        const resp = await ec2.send(new DescribeNetworkAclsCommand({
+          Filters: [{ Name: 'association.subnet-id', Values: [subnetId] }],
+        }))
+        const nacls = (resp.NetworkAcls || []).map(nacl => ({
+          id: nacl.NetworkAclId,
+          inbound: (nacl.Entries || []).filter(e => !e.Egress).map(e => ({
+            rule: e.RuleNumber,
+            protocol: e.Protocol === '-1' ? 'all' : e.Protocol,
+            action: e.RuleAction,
+            cidr: e.CidrBlock,
+            fromPort: e.PortRange?.From,
+            toPort: e.PortRange?.To,
+          })),
+        }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ nacls }))
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: e.message }))
@@ -381,6 +435,18 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
         await ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] }))
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, action: 'stop', instanceId }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+    } else if (url.pathname === '/api/ec2/start' && req.method === 'POST') {
+      const body = await readBody(req)
+      const { instanceId } = JSON.parse(body)
+      if (!instanceId) { res.writeHead(400); res.end('Missing instanceId'); return }
+      try {
+        await ec2.send(new StartInstancesCommand({ InstanceIds: [instanceId] }))
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, action: 'start', instanceId }))
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: e.message }))
