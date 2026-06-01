@@ -14,7 +14,7 @@ A browser-based 3D data center that renders your live AWS environment:
 
 - **AZs** → Cages/rooms with wireframe walls
 - **EC2 instances** → 1U servers in racks with blinking status LEDs
-- **EKS clusters** → Teal racks; click a node to see cross-AZ connections
+- **EKS clusters** → Click to expand into a floating "mezzanine" room showing namespaces as racks and pods as servers with live status LEDs
 - **RDS databases** → Purple managed-service slabs with glow-strip health indicators
 - **MSK brokers** → Orange slabs showing replication links across AZs
 - **Multi-AZ connections** → Click any multi-AZ resource to see 90° routed interconnect lines
