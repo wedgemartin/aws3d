@@ -147,6 +147,8 @@ export default function EksMezzanine({ clusterName, position, rackPos, onSelect,
           ready: p.ready,
           total: p.total,
           namespace: ns,
+          restarts: p.restarts,
+          launchTime: p.startTime,
         }))
 
         return (

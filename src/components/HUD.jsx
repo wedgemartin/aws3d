@@ -209,9 +209,14 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {selected.dnsName && <div style={styles.row}><span style={styles.label}>DNS:</span><span>{selected.dnsName}</span></div>}
           <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.status === 'down' ? 'stopped' : selected.status}</span></div>
           {selected.checks && <div style={styles.row}><span style={styles.label}>Checks:</span><span>{selected.checks}</span></div>}
+          {selected.node && <div style={styles.row}><span style={styles.label}>Node:</span><span>{selected.node}</span></div>}
+          {selected.namespace && <div style={styles.row}><span style={styles.label}>Namespace:</span><span>{selected.namespace}</span></div>}
+          {selected.ready != null && <div style={styles.row}><span style={styles.label}>Ready:</span><span>{selected.ready}/{selected.total}</span></div>}
+          {selected.restarts != null && <div style={styles.row}><span style={styles.label}>Restarts:</span><span>{selected.restarts}</span></div>}
+          {selected.containers?.length > 0 && <div style={styles.row}><span style={styles.label}>Containers:</span><span>{selected.containers.join(', ')}</span></div>}
           {selected.subnet && <div style={styles.row}><span style={styles.label}>Subnet:</span><span>{selected.subnet}</span></div>}
           {selected.vpcId && <div style={styles.row}><span style={styles.label}>VPC:</span><span>{selected.vpcId}</span></div>}
-          {selected.launchTime && <div style={styles.row}><span style={styles.label}>Launched:</span><span>{formatUptime(selected.launchTime)}</span></div>}
+          {selected.launchTime && <div style={styles.row}><span style={styles.label}>Running:</span><span>{formatUptime(selected.launchTime)}</span></div>}
           {selected.volumes?.length > 0 && <div style={styles.row}><span style={styles.label}>Volumes:</span><span>{selected.volumes.map(v => `${v.device} ${v.size || '?'}GB ${v.type || ''}`).join(' · ')}</span></div>}
           {selected.id && <div style={styles.row}><span style={styles.label}>ID:</span><span>{selected.id}</span></div>}
           {isEc2 && connected && (

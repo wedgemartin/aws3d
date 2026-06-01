@@ -28,9 +28,10 @@ export default function App() {
     <>
       <Canvas camera={{ position: [0, 5, 30], fov: 70 }} shadows>
         <color attach="background" args={['#0a0a0f']} />
-        <ambientLight intensity={0.3} />
-        <directionalLight position={[20, 30, 10]} intensity={0.8} castShadow />
-        <pointLight position={[-20, 15, -10]} intensity={0.4} color="#4488ff" />
+        <ambientLight intensity={0.4} />
+        <directionalLight position={[10, 15, 20]} intensity={0.7} castShadow />
+        <pointLight position={[-20, 8, 15]} intensity={0.5} color="#4488ff" />
+        <pointLight position={[20, 6, -10]} intensity={0.3} color="#ff9944" />
         <Stars radius={100} depth={50} count={2000} factor={4} fade />
         <DataCenter onSelect={setSelected} onPin={setPinned} viewMode={viewMode} onLoaded={() => setDataLoaded(true)} onFetching={setFetching} />
         <PointerLockControls onLock={() => setLocked(true)} onUnlock={() => setLocked(false)} />

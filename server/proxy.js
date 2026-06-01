@@ -508,6 +508,8 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
           containers: (pod.spec.containers || []).map(c => c.name),
           ready: (pod.status?.containerStatuses || []).filter(c => c.ready).length,
           total: (pod.spec.containers || []).length,
+          startTime: pod.status?.startTime,
+          restarts: (pod.status?.containerStatuses || []).reduce((sum, c) => sum + (c.restartCount || 0), 0),
         }))
         console.log(`  ✓ Found ${pods.length} pods`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
