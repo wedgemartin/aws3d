@@ -4,6 +4,8 @@
 
 ![aws3d screenshot](screenshot.png)
 
+![EKS cluster visualization](screenshot-eks.png)
+
 ![React Three Fiber](https://img.shields.io/badge/R3F-Three.js-blue) ![AWS SDK v3](https://img.shields.io/badge/AWS_SDK-v3-orange)
 
 ## What is this?
@@ -134,10 +136,33 @@ The proxy calls these APIs (read-only):
 
 - `ec2:DescribeInstances`
 - `ec2:DescribeInstanceStatus`
+- `ec2:DescribeVolumes`
+- `ec2:DescribeSubnets`
+- `ec2:DescribeSecurityGroups`
+- `ec2:DescribeNetworkAcls`
 - `eks:ListClusters`
 - `eks:DescribeCluster`
 - `rds:DescribeDBInstances`
 - `kafka:ListClustersV2`
+- `elasticloadbalancing:DescribeLoadBalancers`
+- `elasticloadbalancing:DescribeTargetGroups`
+- `elasticloadbalancing:DescribeTargetHealth`
+- `elasticloadbalancing:DescribeListeners`
+- `elasticloadbalancing:DescribeRules`
+- `elasticfilesystem:DescribeFileSystems`
+- `cloudtrail:LookupEvents`
+
+For EC2 actions (optional):
+- `ec2:RebootInstances`
+- `ec2:StopInstances`
+- `ec2:StartInstances`
+
+### EKS Kubernetes Visualization
+
+To see namespace/pod details when clicking an EKS cluster, your IAM role also needs:
+- Kubernetes RBAC access to the cluster (list namespaces, list pods)
+- This is typically granted via `aws-auth` ConfigMap or EKS access entries
+- The proxy generates an EKS auth token using the same IAM role it uses for AWS APIs
 
 ## Global Install (optional)
 
