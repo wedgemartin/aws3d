@@ -141,6 +141,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
           version: detail.cluster.version,
           status: detail.cluster.status === 'ACTIVE' ? 'healthy' : 'degraded',
           endpoint: detail.cluster.endpoint,
+          ca: detail.cluster.certificateAuthority?.data,
         })
       } catch {}
     }
@@ -268,6 +269,88 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
     return { portGroups, targets: allTargets }
   }
 
+  // EKS Kubernetes API helpers
+  let eksClusterCache = {} // name → { endpoint, ca }
+
+  async function getEksToken(clusterName) {
+    console.log(`    → Generating EKS token for: ${clusterName}`)
+    const creds = await (buildCredentialProvider()?.() || Promise.resolve(null))
+    if (!creds) throw new Error('No credentials available for EKS token')
+
+    const { SignatureV4 } = await import('@smithy/signature-v4')
+    const { Sha256 } = await import('@aws-crypto/sha256-js')
+    const { HttpRequest } = await import('@smithy/protocol-http')
+
+    // Match exactly what `aws eks get-token` does
+    const stsHost = region.startsWith('us-gov') ? `sts.${region}.amazonaws.com` : `sts.${region}.amazonaws.com`
+
+    const request = new HttpRequest({
+      method: 'GET',
+      protocol: 'https:',
+      hostname: stsHost,
+      path: '/',
+      query: {
+        'Action': 'GetCallerIdentity',
+        'Version': '2011-06-15',
+      },
+      headers: {
+        'host': stsHost,
+        'x-k8s-aws-id': clusterName,
+      },
+    })
+
+    const signer = new SignatureV4({
+      credentials: creds,
+      region,
+      service: 'sts',
+      sha256: Sha256,
+    })
+
+    const signed = await signer.presign(request, { expiresIn: 60 })
+
+    // Build the full URL from the signed request
+    const qs = Object.entries(signed.query).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
+    const url = `https://${signed.hostname}${signed.path}?${qs}`
+
+    // Encode as base64url without padding (matching AWS CLI behavior)
+    const token = 'k8s-aws-v1.' + Buffer.from(url).toString('base64url').replace(/=+$/, '')
+    console.log(`    ✓ Token generated (${token.length} chars)`)
+    console.log(`    DEBUG URL: ${url.substring(0, 200)}...`)
+    return token
+  }
+
+  async function k8sGet(clusterName, path) {
+    console.log(`    → K8s GET: ${path}`)
+    // Get cluster info (cached)
+    if (!eksClusterCache[clusterName]) {
+      const detail = await eks.send(new DescribeClusterCommand({ name: clusterName }))
+      eksClusterCache[clusterName] = { endpoint: detail.cluster.endpoint, ca: detail.cluster.certificateAuthority?.data }
+    }
+    const { endpoint, ca } = eksClusterCache[clusterName]
+    const token = await getEksToken(clusterName)
+
+    const https = await import('node:https')
+    return new Promise((resolve, reject) => {
+      const url = new URL(path, endpoint)
+      const opts = {
+        hostname: url.hostname,
+        path: url.pathname + url.search,
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        ca: ca ? Buffer.from(ca, 'base64') : undefined,
+      }
+      const req = https.request(opts, (res) => {
+        let data = ''
+        res.on('data', c => data += c)
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)) } catch { resolve({ error: data }) }
+        })
+      })
+      req.on('error', reject)
+      req.end()
+    })
+  }
+
   function readBody(req) {
     return new Promise((resolve) => {
       let data = ''
@@ -379,6 +462,61 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: e.message }))
       }
+    } else if (url.pathname === '/api/eks/namespaces') {
+      const cluster = url.searchParams.get('cluster')
+      if (!cluster) { res.writeHead(400); res.end('Missing ?cluster='); return }
+      console.log(`  → EKS namespaces for cluster: ${cluster}`)
+      try {
+        const data = await k8sGet(cluster, '/api/v1/namespaces')
+        if (data.error || data.kind === 'Status') {
+          console.log(`  ✗ K8s API error:`, JSON.stringify(data).slice(0, 200))
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: data.message || data.error || 'K8s API error' }))
+          return
+        }
+        const systemNs = ['kube-system', 'kube-public', 'kube-node-lease', 'default']
+        const namespaces = (data.items || [])
+          .filter(ns => !systemNs.includes(ns.metadata.name))
+          .map(ns => ({ name: ns.metadata.name, status: ns.status?.phase }))
+        console.log(`  ✓ Found ${namespaces.length} namespaces`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ namespaces }))
+      } catch (e) {
+        console.log(`  ✗ EKS namespaces error: ${e.message}`)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+    } else if (url.pathname === '/api/eks/pods') {
+      const cluster = url.searchParams.get('cluster')
+      const namespace = url.searchParams.get('namespace')
+      if (!cluster) { res.writeHead(400); res.end('Missing ?cluster='); return }
+      console.log(`  → EKS pods for cluster: ${cluster}, namespace: ${namespace || 'all'}`)
+      try {
+        const path = namespace ? `/api/v1/namespaces/${namespace}/pods` : '/api/v1/pods'
+        const data = await k8sGet(cluster, path)
+        if (data.error || data.kind === 'Status') {
+          console.log(`  ✗ K8s API error:`, JSON.stringify(data).slice(0, 200))
+          res.writeHead(500, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: data.message || data.error || 'K8s API error' }))
+          return
+        }
+        const pods = (data.items || []).map(pod => ({
+          name: pod.metadata.name,
+          namespace: pod.metadata.namespace,
+          node: pod.spec.nodeName,
+          status: pod.status?.phase,
+          containers: (pod.spec.containers || []).map(c => c.name),
+          ready: (pod.status?.containerStatuses || []).filter(c => c.ready).length,
+          total: (pod.spec.containers || []).length,
+        }))
+        console.log(`  ✓ Found ${pods.length} pods`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ pods }))
+      } catch (e) {
+        console.log(`  ✗ EKS pods error: ${e.message}`)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
     } else if (url.pathname === '/api/health') {
       // Also verify credentials are still valid
       try {
@@ -456,6 +594,22 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       res.end('Not found')
     }
   })
+
+  // Proactive credential refresh — re-assume 5 min before expiry
+  if (roleArn) {
+    setInterval(async () => {
+      const now = Date.now()
+      if (assumedExpiry > 0 && now > assumedExpiry - 300000) {
+        console.log('  ↻ Proactively refreshing credentials...')
+        forceRefreshCreds()
+        try {
+          await sts.send(new GetCallerIdentityCommand({}))
+        } catch (e) {
+          console.warn('  ⚠ Credential refresh failed:', e.message)
+        }
+      }
+    }, 60000) // check every minute
+  }
 
   server.listen(port, '127.0.0.1', () => {
     console.log(`\n  🏢 aws3d proxy running on http://127.0.0.1:${port}`)

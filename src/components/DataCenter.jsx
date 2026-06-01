@@ -6,6 +6,7 @@ import { fetchInfraStatus } from '../data/fetchStatus'
 import Cage from './Cage'
 import Rack from './Rack'
 import Interconnect from './Interconnect'
+import EksMezzanine from './EksMezzanine'
 
 // Layout constants
 const MIN_CAGE_WIDTH = 30
@@ -86,6 +87,8 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
   const [pinned, setPinned] = useState(null)
   const [elbTargets, setElbTargets] = useState([])
   const [elbPortGroups, setElbPortGroups] = useState([])
+  const [expandedEks, setExpandedEks] = useState(null)
+  const [eksClickPos, setEksClickPos] = useState([0, 9, 0])
   const [loaded, setLoaded] = useState(false)
 
   const poll = useCallback(async () => {
@@ -159,6 +162,13 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
       onPin(data)
       setElbTargets([])
       setElbPortGroups([])
+
+      // EKS cluster click — toggle mezzanine
+      if (data.cluster && data.id?.startsWith('eks-')) {
+        setExpandedEks(prev => prev === data.cluster ? null : data.cluster)
+        if (data._clickPoint) setEksClickPos(data._clickPoint)
+      }
+
       // If it's an ELB, fetch targets on-demand
       if (data.arn) {
         onFetching(true)
@@ -489,6 +499,20 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
           </group>
         )
       })}
+
+      {/* EKS Mezzanine — floating above AZ-A when expanded */}
+      {expandedEks && (
+        <EksMezzanine
+          clusterName={expandedEks}
+          position={[eksClickPos[0], 15, eksClickPos[2]]}
+          rackPos={eksClickPos}
+          onSelect={handleSelect}
+          onClick={handleClick}
+          pinnedId={pinned?.id}
+          highlightIds={interconnectNodes}
+          highlightColors={highlightColors}
+        />
+      )}
 
       {/* On-demand interconnect lines when a multi-AZ node is pinned */}
       {pinned && interconnectNodes.length > 1 && (() => {

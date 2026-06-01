@@ -23,13 +23,13 @@ export default function Cage({ width, depth, label }) {
         <meshStandardMaterial color="#1a2244" transparent opacity={wallOpacity} depthWrite={false} />
       </mesh>
 
-      {/* Label */}
+      {/* Label — inside, top-left of back wall */}
       <Text
-        position={[0, height + 0.5, 0]}
+        position={[-width / 2 + 1, height * 0.5, -depth / 2 + 0.1]}
         fontSize={1.2}
         color="#6688cc"
-        anchorX="center"
-        anchorY="bottom"
+        anchorX="left"
+        anchorY="top"
       >
         {label}
       </Text>

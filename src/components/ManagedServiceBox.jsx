@@ -31,7 +31,7 @@ export default function ManagedServiceBox({ position, data, color, darkColor, on
       position={position}
       onPointerOver={(e) => { e.stopPropagation(); setHovered(true); onSelect(data); document.body.style.cursor = 'pointer' }}
       onPointerOut={() => { setHovered(false); onSelect(null); document.body.style.cursor = 'default' }}
-      onClick={(e) => { e.stopPropagation(); onClick && onClick(data) }}
+      onClick={(e) => { e.stopPropagation(); onClick && onClick({ ...data, _clickPoint: e.point ? [e.point.x, e.point.y, e.point.z] : null }) }}
     >
       {/* Smooth rounded slab */}
       <mesh castShadow>
