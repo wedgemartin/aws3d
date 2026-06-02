@@ -55,14 +55,29 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
   const creds = buildCredentialProvider()
   const opts = { region, ...(creds && { credentials: creds }) }
 
-  const ec2 = new EC2Client(opts)
-  const eks = new EKSClient(opts)
-  const rds = new RDSClient(opts)
-  const kafka = new KafkaClient(opts)
-  const elbv2 = new ElasticLoadBalancingV2Client(opts)
-  const efs = new EFSClient(opts)
-  const sts = new STSClient(opts)
-  const cloudtrail = new CloudTrailClient(opts)
+  let ec2 = new EC2Client(opts)
+  let eks = new EKSClient(opts)
+  let rds = new RDSClient(opts)
+  let kafka = new KafkaClient(opts)
+  let elbv2 = new ElasticLoadBalancingV2Client(opts)
+  let efs = new EFSClient(opts)
+  let sts = new STSClient(opts)
+  let cloudtrail = new CloudTrailClient(opts)
+
+  function rebuildClients() {
+    const freshCreds = buildCredentialProvider()
+    const freshOpts = { region, ...(freshCreds && { credentials: freshCreds }) }
+    ec2 = new EC2Client(freshOpts)
+    eks = new EKSClient(freshOpts)
+    rds = new RDSClient(freshOpts)
+    kafka = new KafkaClient(freshOpts)
+    elbv2 = new ElasticLoadBalancingV2Client(freshOpts)
+    efs = new EFSClient(freshOpts)
+    sts = new STSClient(freshOpts)
+    cloudtrail = new CloudTrailClient(freshOpts)
+    eksClusterCache = {}
+    console.log('  ↻ All clients rebuilt with fresh credentials')
+  }
 
   async function fetchStatus() {
     const [instances, instanceStatus, clusters, dbInstances, mskClusters, loadBalancers, fileSystems] = await Promise.all([
@@ -351,6 +366,37 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
     })
   }
 
+  async function k8sDelete(clusterName, path) {
+    console.log(`    → K8s DELETE: ${path}`)
+    if (!eksClusterCache[clusterName]) {
+      const detail = await eks.send(new DescribeClusterCommand({ name: clusterName }))
+      eksClusterCache[clusterName] = { endpoint: detail.cluster.endpoint, ca: detail.cluster.certificateAuthority?.data }
+    }
+    const { endpoint, ca } = eksClusterCache[clusterName]
+    const token = await getEksToken(clusterName)
+
+    const https = await import('node:https')
+    return new Promise((resolve, reject) => {
+      const url = new URL(path, endpoint)
+      const opts = {
+        hostname: url.hostname,
+        path: url.pathname + url.search,
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        ca: ca ? Buffer.from(ca, 'base64') : undefined,
+      }
+      const req = https.request(opts, (res) => {
+        let data = ''
+        res.on('data', c => data += c)
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)) } catch { resolve({ error: data }) }
+        })
+      })
+      req.on('error', reject)
+      req.end()
+    })
+  }
+
   function readBody(req) {
     return new Promise((resolve) => {
       let data = ''
@@ -524,29 +570,26 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       try {
         const identity = await sts.send(new GetCallerIdentityCommand({}))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account, canRefresh: !!roleArn }))
+        res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account, canRefresh: true }))
       } catch (e) {
         const expired = e.name === 'ExpiredTokenException' || e.message?.includes('expired') || e.name === 'InvalidIdentityToken'
-        // Auto-refresh if we have a role ARN
-        if (expired && roleArn) {
+        // Auto-refresh: rebuild clients and retry
+        if (expired) {
           forceRefreshCreds()
+          rebuildClients()
           try {
-            await sts.send(new GetCallerIdentityCommand({}))
+            const identity = await sts.send(new GetCallerIdentityCommand({}))
             res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ ok: true, refreshed: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, canRefresh: true }))
+            res.end(JSON.stringify({ ok: true, refreshed: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account, canRefresh: true }))
             return
           } catch {}
         }
         res.writeHead(expired ? 401 : 200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: !expired, expired, error: expired ? 'Credentials expired' : null, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, canRefresh: !!roleArn }))
+        res.end(JSON.stringify({ ok: !expired, expired, error: expired ? 'Credentials expired' : null, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, canRefresh: true }))
       }
     } else if (url.pathname === '/api/refresh' && req.method === 'POST') {
-      if (!roleArn) {
-        res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'No --role-arn configured, cannot refresh' }))
-        return
-      }
       forceRefreshCreds()
+      rebuildClients()
       try {
         const identity = await sts.send(new GetCallerIdentityCommand({}))
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -587,6 +630,19 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
         await ec2.send(new StartInstancesCommand({ InstanceIds: [instanceId] }))
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true, action: 'start', instanceId }))
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+    } else if (url.pathname === '/api/eks/pod/delete' && req.method === 'POST') {
+      const body = await readBody(req)
+      const { cluster, namespace, pod } = JSON.parse(body)
+      if (!cluster || !namespace || !pod) { res.writeHead(400); res.end('Missing cluster, namespace, or pod'); return }
+      console.log(`  → Deleting pod ${namespace}/${pod} in cluster ${cluster}`)
+      try {
+        await k8sDelete(cluster, `/api/v1/namespaces/${namespace}/pods/${pod}`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, action: 'delete', pod }))
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: e.message }))

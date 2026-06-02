@@ -76,10 +76,19 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
         if (e.key === 'x' || e.key === 'X') setConfirmAction(null)
         return
       }
-      // Only trigger on pinned EC2 instances (have an instance ID starting with i-)
-      // Require Ctrl modifier to avoid conflict with WASD movement
-      if (!pinned || !pinned.id?.startsWith('i-')) return
-      if (!e.ctrlKey) return
+      if (!pinned || !e.ctrlKey) return
+
+      // Pod actions (ID contains /)
+      const isPod = pinned.id?.includes('/')
+      if (isPod && e.key === 'k') {
+        e.preventDefault()
+        const parts = pinned.id.split('/')
+        setConfirmAction({ action: 'delete-pod', cluster: parts[0], namespace: parts[1], pod: parts[2], name: pinned.name })
+        return
+      }
+
+      // EC2 actions (ID starts with i-)
+      if (!pinned.id?.startsWith('i-')) return
       if (e.key === 'r') setConfirmAction({ action: 'reboot', instanceId: pinned.id, name: pinned.name })
       if (e.key === 's') {
         const action = pinned.status === 'down' ? 'start' : 'stop'
@@ -110,22 +119,45 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
     return () => window.removeEventListener('keydown', onKey)
   }, [pinned, confirmAction])
 
-  const executeAction = useCallback(async ({ action, instanceId }) => {
+  const executeAction = useCallback(async (action) => {
     try {
-      const res = await fetch(`${PROXY_URL}/api/ec2/${action}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instanceId }),
-      })
+      let res
+      if (action.action === 'delete-pod') {
+        res = await fetch(`${PROXY_URL}/api/eks/pod/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cluster: action.cluster, namespace: action.namespace, pod: action.pod }),
+        })
+      } else {
+        res = await fetch(`${PROXY_URL}/api/ec2/${action.action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instanceId: action.instanceId }),
+        })
+      }
       const data = await res.json()
-      setActionResult(data.ok ? `✓ ${action} sent to ${instanceId}` : `✗ ${data.error}`)
+      setActionResult(data.ok ? `✓ ${action.action} sent` : `✗ ${data.error}`)
       setTimeout(() => setActionResult(null), 5000)
-      // Trigger fast polling so user sees state change
       if (data.ok && window.__aws3dFastPoll) window.__aws3dFastPoll()
     } catch (e) {
       setActionResult(`✗ ${e.message}`)
       setTimeout(() => setActionResult(null), 5000)
     }
+  }, [])
+
+  const [refreshing, setRefreshing] = useState(false)
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      const res = await fetch(`${PROXY_URL}/api/refresh`, { method: 'POST' })
+      const data = await res.json()
+      if (data.ok) {
+        const info = await checkProxy()
+        setProxyInfo(info)
+      }
+    } catch {}
+    setRefreshing(false)
   }, [])
 
   const connected = proxyInfo?.ok === true
@@ -141,11 +173,12 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
         background: loading ? 'rgba(40,40,60,0.8)' : expired ? 'rgba(80,0,0,0.8)' : connected ? 'rgba(0,80,0,0.8)' : 'rgba(80,60,0,0.8)',
         border: `1px solid ${loading ? '#666688' : expired ? '#ff4444' : connected ? '#00cc44' : '#aa8800'}`,
         color: loading ? '#8888aa' : expired ? '#ff6666' : connected ? '#00ff66' : '#ffcc00',
+        pointerEvents: expired ? 'auto' : 'none',
       }}>
         {loading
           ? '◌ Loading...'
           : expired
-            ? '⚠ Credentials Expired — restart proxy with fresh creds'
+            ? <>⚠ Credentials Expired — <span onClick={handleRefresh} style={{ cursor: 'pointer', textDecoration: 'underline', color: '#ffaa44' }}>{refreshing ? 'Refreshing...' : '↻ Refresh'}</span></>
             : connected
               ? `● Live — ${proxyInfo.profile} (${proxyInfo.region})`
               : '○ Sample Data'}
@@ -181,7 +214,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
       {confirmAction && (
         <div style={styles.confirm}>
           <div style={{ fontSize: 16, marginBottom: 8 }}>
-            {confirmAction.action === 'reboot' ? '🔄 Reboot' : confirmAction.action === 'start' ? '▶ Start' : '⏹ Stop'} instance?
+            {confirmAction.action === 'reboot' ? '🔄 Reboot' : confirmAction.action === 'start' ? '▶ Start' : confirmAction.action === 'delete-pod' ? '💀 Kill Pod' : '⏹ Stop'} instance?
           </div>
           <div style={{ color: '#ffffff', marginBottom: 12 }}>{confirmAction.name}</div>
           <div style={{ color: '#888' }}>{confirmAction.instanceId}</div>
@@ -222,6 +255,11 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {isEc2 && connected && (
             <div style={styles.actions}>
               Ctrl+R Reboot · {selected.status === 'down' ? 'Ctrl+S Start' : 'Ctrl+S Stop'} · Ctrl+G SG · Ctrl+N NACL
+            </div>
+          )}
+          {selected.id?.includes('/') && connected && (
+            <div style={styles.actions}>
+              Ctrl+K Kill Pod
             </div>
           )}
           {sgData && (

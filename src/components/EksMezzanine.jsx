@@ -16,6 +16,14 @@ export default function EksMezzanine({ clusterName, position, rackPos, onSelect,
   const [podsByNs, setPodsByNs] = useState({})
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(null)
+  const [pollTick, setPollTick] = useState(0)
+
+  useEffect(() => {
+    const orig = window.__aws3dFastPoll
+    const wrapped = () => { if (orig) orig(); setPollTick(t => t + 1) }
+    window.__aws3dFastPoll = wrapped
+    return () => { window.__aws3dFastPoll = orig }
+  }, [])
 
   useEffect(() => {
     if (!clusterName) return
@@ -46,7 +54,7 @@ export default function EksMezzanine({ clusterName, position, rackPos, onSelect,
         setLoaded(true)
       })
       .catch(() => setLoaded(true))
-  }, [clusterName])
+  }, [clusterName, pollTick])
 
   if (!loaded) return null
   if (error) {

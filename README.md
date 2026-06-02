@@ -18,6 +18,10 @@ A browser-based 3D data center that renders your live AWS environment:
 - **RDS databases** → Purple managed-service slabs with glow-strip health indicators
 - **MSK brokers** → Orange slabs showing replication links across AZs
 - **Multi-AZ connections** → Click any multi-AZ resource to see 90° routed interconnect lines
+- **ELBs (ALB/NLB/CLB)** → Click to see color-coded listener port routing to target group instances
+- **EFS** → Blue storage slabs with health indicators
+- **VPCs** → Color-coded floor zones inside each AZ cage
+- **Subnets** → Toggle network view (V key) to group racks by subnet
 
 Navigate with WASD + mouse like a first-person game.
 
@@ -84,6 +88,58 @@ If the proxy isn't running, the app shows sample data in demo mode.
 | ESC | Release cursor |
 | Click server | Pin selection, show interconnects |
 | Click floor | Clear selection |
+| V | Toggle view mode (Role ↔ Subnet) |
+| Ctrl+R | Reboot pinned EC2 instance |
+| Ctrl+S | Stop/Start pinned EC2 instance |
+| Ctrl+G | Show security group inbound rules |
+| Ctrl+N | Show NACL rules for subnet |
+| Ctrl+K | Kill (delete) pinned pod |
+
+## Features
+
+### EC2 Instances
+- Orange 1U server boxes with blinking status LEDs (green=running, amber=degraded, dim red=stopped)
+- Hover to see name, click to pin
+- Info panel shows: type, IP, status checks (2/2), uptime, volumes (size/type), subnet, VPC
+- Last 5 CloudTrail events (reboot, stop, start, etc.)
+- Actions: Ctrl+R reboot, Ctrl+S stop/start
+- Security groups (Ctrl+G) and NACLs (Ctrl+N) on demand
+
+### EKS Clusters
+- Click cluster in rack → floating mezzanine room appears above AZ
+- Namespace racks with pod servers inside
+- Pod status LEDs reflect real K8s pod phase (Running/Pending/Failed)
+- Pod info: node (EC2 ID), containers, ready count, restarts, uptime
+- Ctrl+K to kill a pod (triggers recreation by deployment controller)
+- Vertical connector line from rack to mezzanine
+- Cluster name prefix stripped from namespace/pod labels for readability
+
+### ELBs (ALB/NLB/CLB)
+- Click an ELB → color-coded floating labels show each listener rule
+- Path-based routing visible: `:443 /api/* → api-tg (:8080)`
+- Target instances highlight in the matching listener color
+- DNS name shown in info panel
+
+### RDS Databases
+- Purple managed-service slabs with glow-strip health
+- Multi-AZ: standby instance appears in opposite AZ
+- Click primary → interconnect line to standby
+- Endpoint DNS shown in info panel
+
+### MSK (Kafka)
+- Orange slabs showing broker status
+- Click → interconnect lines between AZ brokers
+
+### Network Visualization
+- VPC floor zones (colored rectangles) inside each AZ cage
+- Press V to toggle subnet view (racks grouped by subnet instead of role)
+- Subnet CIDR labels on rack headers in network mode
+
+### Credential Management
+- Auto-detects expired credentials
+- `--role-arn` flag enables automatic re-assumption before expiry
+- Proactive refresh timer (checks every 60s, refreshes 5min before expiry)
+- Status badge: `● Live`, `◌ Loading...`, `○ Sample Data`, `⚠ Credentials Expired`
 
 ## Architecture
 
@@ -96,7 +152,8 @@ Browser (localhost:5173)          Local Proxy (127.0.0.1:9876)
 └─────────────────────┘          └──────────┬───────────────┘
                                             │
                                             ▼
-                                   AWS APIs (EC2, EKS, RDS, MSK)
+                                   AWS APIs (EC2, EKS, RDS, MSK,
+                                   ELB, EFS, CloudTrail, STS)
 ```
 
 **Security model:**
@@ -119,6 +176,7 @@ src/
 │   ├── Rack.jsx            ← Server cabinet (splits at 12 units, max 10 wide)
 │   ├── ServerBox.jsx       ← EC2 instance (orange chassis, blinking LEDs)
 │   ├── ManagedServiceBox.jsx ← Managed service (colored slab, glow strip)
+│   ├── EksMezzanine.jsx    ← Floating EKS cluster room (namespaces + pods)
 │   ├── Interconnect.jsx    ← 90° routed cross-AZ connection lines
 │   ├── WASDControls.jsx    ← FPS camera movement
 │   └── HUD.jsx             ← 2D overlay (connection status, server info)
