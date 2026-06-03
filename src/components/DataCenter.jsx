@@ -625,7 +625,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
                   outlineWidth={0.02}
                   outlineColor="#000000"
                 >
-                  :{pg.listenerPort} {pg.path} → {pg.targetGroup}{pg.targetPort ? ` (:${pg.targetPort})` : ''}
+                  :{pg.listenerPort}{pg.protocol === 'TLS' || pg.protocol === 'HTTPS' ? ' 🔒' : ''} {pg.path} → {pg.targetGroup}{pg.targetPort ? ` (:${pg.targetPort})` : ''}
                 </Text>
               ))}
             </group>
