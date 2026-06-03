@@ -257,7 +257,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
               Ctrl+R Reboot · {selected.status === 'down' ? 'Ctrl+S Start' : 'Ctrl+S Stop'} · Ctrl+G SG · Ctrl+N NACL
             </div>
           )}
-          {selected.id?.includes('/') && connected && (
+          {selected.id?.split('/').length === 3 && connected && (
             <div style={styles.actions}>
               Ctrl+K Kill Pod
             </div>

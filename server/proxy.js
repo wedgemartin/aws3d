@@ -5,6 +5,7 @@ import { RDSClient, DescribeDBInstancesCommand } from '@aws-sdk/client-rds'
 import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
 import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand, DescribeListenersCommand, DescribeRulesCommand } from '@aws-sdk/client-elastic-load-balancing-v2'
 import { EFSClient, DescribeFileSystemsCommand } from '@aws-sdk/client-efs'
+import { OpenSearchClient, ListDomainNamesCommand, DescribeDomainsCommand } from '@aws-sdk/client-opensearch'
 import { STSClient, GetCallerIdentityCommand, AssumeRoleCommand } from '@aws-sdk/client-sts'
 import { CloudTrailClient, LookupEventsCommand } from '@aws-sdk/client-cloudtrail'
 import { fromIni, fromEnv } from '@aws-sdk/credential-providers'
@@ -61,6 +62,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
   let kafka = new KafkaClient(opts)
   let elbv2 = new ElasticLoadBalancingV2Client(opts)
   let efs = new EFSClient(opts)
+  let opensearch = new OpenSearchClient(opts)
   let sts = new STSClient(opts)
   let cloudtrail = new CloudTrailClient(opts)
 
@@ -73,6 +75,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
     kafka = new KafkaClient(freshOpts)
     elbv2 = new ElasticLoadBalancingV2Client(freshOpts)
     efs = new EFSClient(freshOpts)
+    opensearch = new OpenSearchClient(freshOpts)
     sts = new STSClient(freshOpts)
     cloudtrail = new CloudTrailClient(freshOpts)
     eksClusterCache = {}
@@ -80,7 +83,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
   }
 
   async function fetchStatus() {
-    const [instances, instanceStatus, clusters, dbInstances, mskClusters, loadBalancers, fileSystems] = await Promise.all([
+    const [instances, instanceStatus, clusters, dbInstances, mskClusters, loadBalancers, fileSystems, osDomainNames] = await Promise.all([
       ec2.send(new DescribeInstancesCommand({})).catch(e => ({ Reservations: [], _error: e.message })),
       ec2.send(new DescribeInstanceStatusCommand({ IncludeAllInstances: true })).catch(e => ({ InstanceStatuses: [], _error: e.message })),
       eks.send(new ListClustersCommand({})).catch(e => ({ clusters: [], _error: e.message })),
@@ -88,6 +91,7 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       kafka.send(new ListClustersV2Command({})).catch(e => ({ ClusterInfoList: [], _error: e.message })),
       elbv2.send(new DescribeLoadBalancersCommand({})).catch(e => ({ LoadBalancers: [], _error: e.message })),
       efs.send(new DescribeFileSystemsCommand({})).catch(e => ({ FileSystems: [], _error: e.message })),
+      opensearch.send(new ListDomainNamesCommand({})).catch(e => ({ DomainNames: [], _error: e.message })),
     ])
 
     // Build status check map
@@ -220,7 +224,25 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       } catch (e) { console.warn('DescribeSubnets failed:', e.message) }
     }
 
-    return { ec2: ec2Instances, eks: eksDetails, rds: rdsNormalized, msk: mskNormalized, elb: elbNormalized, efs: efsNormalized, subnets: subnetMap, ts: Date.now() }
+    // Normalize OpenSearch
+    const osDomains = (osDomainNames.DomainNames || []).map(d => d.DomainName).filter(Boolean)
+    let opensearchNormalized = []
+    if (osDomains.length > 0) {
+      try {
+        const desc = await opensearch.send(new DescribeDomainsCommand({ DomainNames: osDomains }))
+        opensearchNormalized = (desc.DomainStatusList || []).map(d => ({
+          id: d.ARN,
+          name: d.DomainName,
+          version: d.EngineVersion,
+          instanceType: d.ClusterConfig?.InstanceType,
+          instanceCount: d.ClusterConfig?.InstanceCount,
+          endpoint: d.Endpoints?.vpc || d.Endpoint || null,
+          status: d.Processing ? 'degraded' : 'healthy',
+        }))
+      } catch (e) { console.warn('DescribeDomains failed:', e.message) }
+    }
+
+    return { ec2: ec2Instances, eks: eksDetails, rds: rdsNormalized, msk: mskNormalized, elb: elbNormalized, efs: efsNormalized, opensearch: opensearchNormalized, subnets: subnetMap, ts: Date.now() }
   }
 
   // On-demand: get target instances for a specific ELB

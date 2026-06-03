@@ -80,6 +80,7 @@ export const categoryColors = {
   eks:       { dark: '#1a3333', bright: '#00bfa5' },
   rds:       { dark: '#2a1a3d', bright: '#9b59b6' },
   msk:       { dark: '#3d1a00', bright: '#e65100' },
+  opensearch:{ dark: '#1a1a3d', bright: '#4f6df5' },
   efs:       { dark: '#1a2233', bright: '#3f51b5' },
   security:  { dark: '#2d1a1a', bright: '#e53935' },
   network:   { dark: '#1a2d1a', bright: '#43a047' },
