@@ -103,24 +103,25 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
         return `az-${az.slice(-1)}`
       }
 
-      if (data.ec2?.length) {
+      // For live data, always update state (even if empty) to clear sample data
+      if (data.ec2) {
         setEc2(data.ec2.map(i => ({ ...i, az: azSuffix(i.az), role: i.role || guessRole(i.name) })))
       }
-      if (data.rds?.length) {
+      if (data.rds) {
         setRds(data.rds.map(r => ({ ...r, az: azSuffix(r.az) })))
-      } else if (data.rds) {
-        setRds([])
       }
       if (data.eks?.length) {
         const eksNodeAzs = (data.ec2 || []).filter(i => guessRole(i.name) === 'eks-node').map(i => azSuffix(i.az))
         const azList = eksNodeAzs.length > 0 ? [...new Set(eksNodeAzs)] : ['az-a']
         setEks(prev => ({ ...prev, status: data.eks[0]?.status || prev.status, name: data.eks[0]?.name || prev.name, azs: azList }))
+      } else if (data.eks) {
+        setEks({ id: null, name: '', azs: [], status: 'down' })
       }
       if (data.msk?.length) setMsk(prev => ({ ...prev, status: data.msk[0]?.status || prev.status, name: data.msk[0]?.name || prev.name }))
       else if (data.msk) setMsk({ id: null, name: '', azs: [], status: 'down' })
-      if (data.elb?.length) setElbs(data.elb.map(lb => ({ ...lb, az: azSuffix(lb.az) })))
-      if (data.efs?.length) setEfsList(data.efs)
-      if (data.opensearch?.length) setOpensearchList(data.opensearch.map(d => ({ id: d.id, name: d.name, status: d.status, version: d.version, instanceType: d.instanceType })))
+      if (data.elb) setElbs(data.elb.map(lb => ({ ...lb, az: azSuffix(lb.az) })))
+      if (data.efs) setEfsList(data.efs)
+      if (data.opensearch) setOpensearchList(data.opensearch.map(d => ({ id: d.id, name: d.name, status: d.status, version: d.version, instanceType: d.instanceType })))
       if (data.subnets) setSubnets(data.subnets)
       setLoaded(true)
       onLoaded()
