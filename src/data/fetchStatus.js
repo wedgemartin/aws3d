@@ -15,7 +15,7 @@ export async function checkProxy() {
   try {
     const res = await fetch(`${PROXY_URL}/api/health`, { signal: AbortSignal.timeout(2000) })
     const data = await res.json()
-    // Auto-refresh if expired and proxy supports it
+    // Only auto-refresh if proxy supports it (has --role-arn)
     if (data.expired && data.canRefresh) {
       await fetch(`${PROXY_URL}/api/refresh`, { method: 'POST' })
       const retry = await fetch(`${PROXY_URL}/api/health`, { signal: AbortSignal.timeout(2000) })

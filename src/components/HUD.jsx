@@ -148,6 +148,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
   const [refreshing, setRefreshing] = useState(false)
 
   const handleRefresh = useCallback(async () => {
+    if (!proxyInfo?.canRefresh) return // can't refresh env-var creds from UI
     setRefreshing(true)
     try {
       const res = await fetch(`${PROXY_URL}/api/refresh`, { method: 'POST' })
@@ -178,7 +179,9 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
         {loading
           ? '◌ Loading...'
           : expired
-            ? <>⚠ Credentials Expired — <span onClick={handleRefresh} style={{ cursor: 'pointer', textDecoration: 'underline', color: '#ffaa44' }}>{refreshing ? 'Refreshing...' : '↻ Refresh'}</span></>
+            ? proxyInfo?.canRefresh
+              ? <>⚠ Credentials Expired — <span onClick={handleRefresh} style={{ cursor: 'pointer', textDecoration: 'underline', color: '#ffaa44' }}>{refreshing ? 'Refreshing...' : '↻ Refresh'}</span></>
+              : <>⚠ Credentials Expired — restart proxy with fresh creds</>
             : connected
               ? `● Live — ${proxyInfo.profile} (${proxyInfo.region})`
               : '○ Sample Data'}
@@ -252,6 +255,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {selected.launchTime && <div style={styles.row}><span style={styles.label}>Running:</span><span>{formatUptime(selected.launchTime)}</span></div>}
           {selected.volumes?.length > 0 && <div style={styles.row}><span style={styles.label}>Volumes:</span><span>{selected.volumes.map(v => `${v.device} ${v.size || '?'}GB ${v.type || ''}`).join(' · ')}</span></div>}
           {selected.id && <div style={styles.row}><span style={styles.label}>ID:</span><span>{selected.id}</span></div>}
+          {selected.cluster && !selected.namespace && <div style={{ marginTop: 4, fontSize: 11, color: '#ffaa44' }}>Click to expand cluster view</div>}
           {isEc2 && connected && (
             <div style={styles.actions}>
               Ctrl+R Reboot · {selected.status === 'down' ? 'Ctrl+S Start' : 'Ctrl+S Stop'} · Ctrl+G SG · Ctrl+N NACL

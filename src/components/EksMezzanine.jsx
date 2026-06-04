@@ -66,7 +66,15 @@ export default function EksMezzanine({ clusterName, position, rackPos, onSelect,
       </group>
     )
   }
-  if (namespaces.length === 0) return null
+  if (namespaces.length === 0) {
+    return (
+      <group position={position}>
+        <Text position={[0, 0.7, 0]} fontSize={0.35} color="#ffaa44" anchorX="left" maxWidth={30} outlineWidth={0.02} outlineColor="#000000">
+          {`No namespaces found in "${clusterName}" (system namespaces hidden)`}
+        </Text>
+      </group>
+    )
+  }
 
   // Layout namespaces using same algorithm as EC2 racks
   let col = 0
@@ -149,7 +157,7 @@ export default function EksMezzanine({ clusterName, position, rackPos, onSelect,
         const items = pods.map(p => ({
           id: `${clusterName}/${ns}/${p.name}`,
           name: p.name.startsWith(clusterName + '-') ? p.name.slice(clusterName.length + 1) : p.name,
-          status: p.status === 'Running' ? 'healthy' : p.status === 'Pending' ? 'degraded' : 'down',
+          status: p.status === 'Running' && p.ready === p.total && p.restarts < 5 ? 'healthy' : p.status === 'Pending' ? 'degraded' : p.status === 'Running' ? 'degraded' : 'down',
           node: p.node,
           containers: p.containers,
           ready: p.ready,

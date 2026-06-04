@@ -592,11 +592,11 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
       try {
         const identity = await sts.send(new GetCallerIdentityCommand({}))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account, canRefresh: true }))
+        res.end(JSON.stringify({ ok: true, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, account: identity.Account, canRefresh: !!roleArn }))
       } catch (e) {
         const expired = e.name === 'ExpiredTokenException' || e.message?.includes('expired') || e.name === 'InvalidIdentityToken'
-        // Auto-refresh: rebuild clients and retry
-        if (expired) {
+        // Only auto-refresh if we have a role to re-assume
+        if (expired && roleArn) {
           forceRefreshCreds()
           rebuildClients()
           try {
@@ -607,9 +607,27 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
           } catch {}
         }
         res.writeHead(expired ? 401 : 200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: !expired, expired, error: expired ? 'Credentials expired' : null, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, canRefresh: true }))
+        res.end(JSON.stringify({ ok: !expired, expired, error: expired ? 'Credentials expired — restart proxy with fresh credentials' : null, profile: hasEnvCreds ? '(env vars)' : (profile || 'default'), region, canRefresh: !!roleArn }))
       }
     } else if (url.pathname === '/api/refresh' && req.method === 'POST') {
+      const body = await readBody(req)
+      let newCreds = null
+      try { newCreds = body ? JSON.parse(body) : null } catch {}
+
+      // If new credentials were POSTed, inject them into process.env
+      if (newCreds?.accessKeyId && newCreds?.secretAccessKey) {
+        process.env.AWS_ACCESS_KEY_ID = newCreds.accessKeyId
+        process.env.AWS_SECRET_ACCESS_KEY = newCreds.secretAccessKey
+        if (newCreds.sessionToken) process.env.AWS_SESSION_TOKEN = newCreds.sessionToken
+        else delete process.env.AWS_SESSION_TOKEN
+        console.log('  ↻ New credentials injected via API')
+      } else if (!roleArn) {
+        // No role-arn and no new creds posted — can't refresh env var creds
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Cannot refresh env-var credentials. POST new credentials as JSON {accessKeyId, secretAccessKey, sessionToken} or restart the proxy.' }))
+        return
+      }
+
       forceRefreshCreds()
       rebuildClients()
       try {
