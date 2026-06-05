@@ -148,7 +148,6 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
   const [refreshing, setRefreshing] = useState(false)
 
   const handleRefresh = useCallback(async () => {
-    if (!proxyInfo?.canRefresh) return // can't refresh env-var creds from UI
     setRefreshing(true)
     try {
       const res = await fetch(`${PROXY_URL}/api/refresh`, { method: 'POST' })
@@ -179,9 +178,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
         {loading
           ? '◌ Loading...'
           : expired
-            ? proxyInfo?.canRefresh
-              ? <>⚠ Credentials Expired — <span onClick={handleRefresh} style={{ cursor: 'pointer', textDecoration: 'underline', color: '#ffaa44' }}>{refreshing ? 'Refreshing...' : '↻ Refresh'}</span></>
-              : <>⚠ Credentials Expired — restart proxy with fresh creds</>
+            ? <>⚠ Credentials Expired — <span onClick={handleRefresh} style={{ cursor: 'pointer', textDecoration: 'underline', color: '#ffaa44' }}>{refreshing ? 'Refreshing...' : '↻ Refresh'}</span></>
             : connected
               ? `● Live — ${proxyInfo.profile} (${proxyInfo.region})`
               : '○ Sample Data'}

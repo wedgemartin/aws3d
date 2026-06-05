@@ -62,6 +62,13 @@ When using `--role-arn`, the proxy calls `sts:AssumeRole` using your base creden
 and automatically re-assumes the role ~5 minutes before the session expires. No manual
 refresh needed — the proxy stays alive indefinitely.
 
+**Important:** The base credentials (env vars or profile) must be able to *call*
+`sts:AssumeRole` — they cannot already be the target role's session. If you use a
+shell function that assumes a role and exports session tokens, pass only the
+pre-assume base credentials to the proxy and let `--role-arn` handle the assume.
+The UI's ↻ Refresh button also relies on this — it can only re-assume when
+`--role-arn` is set with valid base credentials.
+
 The proxy binds to `127.0.0.1:9876` — it only accepts connections from localhost.
 
 ### 2. Start the frontend

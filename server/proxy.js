@@ -621,11 +621,6 @@ export function createProxy({ profile, region, port = 9876, roleArn }) {
         if (newCreds.sessionToken) process.env.AWS_SESSION_TOKEN = newCreds.sessionToken
         else delete process.env.AWS_SESSION_TOKEN
         console.log('  ↻ New credentials injected via API')
-      } else if (!roleArn) {
-        // No role-arn and no new creds posted — can't refresh env var creds
-        res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Cannot refresh env-var credentials. POST new credentials as JSON {accessKeyId, secretAccessKey, sessionToken} or restart the proxy.' }))
-        return
       }
 
       forceRefreshCreds()

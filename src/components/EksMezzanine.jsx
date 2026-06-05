@@ -22,7 +22,8 @@ export default function EksMezzanine({ clusterName, position, rackPos, onSelect,
     const orig = window.__aws3dFastPoll
     const wrapped = () => { if (orig) orig(); setPollTick(t => t + 1) }
     window.__aws3dFastPoll = wrapped
-    return () => { window.__aws3dFastPoll = orig }
+    const id = setInterval(() => setPollTick(t => t + 1), 15000)
+    return () => { window.__aws3dFastPoll = orig; clearInterval(id) }
   }, [])
 
   useEffect(() => {
