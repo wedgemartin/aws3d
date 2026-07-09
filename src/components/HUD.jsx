@@ -1,7 +1,10 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import { checkProxy } from '../data/fetchStatus'
 
-const PROXY_URL = 'http://127.0.0.1:9876'
+const base = import.meta.env.BASE_URL
+const PROXY_URL = base !== '/'
+  ? `${window.location.origin}${base.replace(/\/$/, '')}`
+  : `${window.location.protocol}//${window.location.hostname}:9876`
 
 function formatUptime(launchTime) {
   const launched = new Date(launchTime)

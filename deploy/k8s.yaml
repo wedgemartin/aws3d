@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws3d
+  namespace: default
+  labels:
+    app: aws3d
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aws3d
+  template:
+    metadata:
+      labels:
+        app: aws3d
+    spec:
+      # imagePullSecrets:
+      # - name: your-registry-secret
+      containers:
+      - name: aws3d
+        image: your-registry.example.com/aws3d:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: AWS_REGION
+          value: "us-east-1"
+        - name: ROLE_ARN
+          value: "arn:aws:iam::123456789012:role/YourReadOnlyRole"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws3d-creds
+              key: access-key-id
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws3d-creds
+              key: secret-access-key
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws3d-service
+  namespace: default
+spec:
+  selector:
+    app: aws3d
+  ports:
+  - port: 8080
+    targetPort: 8080

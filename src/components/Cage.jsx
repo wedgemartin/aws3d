@@ -14,7 +14,7 @@ export default function Cage({ width, depth, label }) {
       </mesh>
 
       {/* Wire-frame walls */}
-      <lineSegments>
+      <lineSegments position={[0, height / 2, 0]}>
         <edgesGeometry args={[new THREE.BoxGeometry(width, height, depth)]} />
         <lineBasicMaterial color="#334466" />
       </lineSegments>

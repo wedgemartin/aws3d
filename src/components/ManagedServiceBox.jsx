@@ -10,10 +10,11 @@ const statusColors = {
   [Status.UNKNOWN]: '#666666',
 }
 
-export default function ManagedServiceBox({ position, data, color, darkColor, onSelect, onClick, isPinned, isHighlighted }) {
+export default function ManagedServiceBox({ position, data, color, darkColor, onSelect, onClick, isPinned, isHighlighted, highlightColor }) {
   const glowRef = useRef()
   const [hovered, setHovered] = useState(false)
   const active = hovered || isPinned || isHighlighted
+  const activeColor = highlightColor || color
 
   useFrame(({ clock }) => {
     if (!glowRef.current) return
@@ -37,10 +38,10 @@ export default function ManagedServiceBox({ position, data, color, darkColor, on
       <mesh castShadow>
         <boxGeometry args={[2, 0.45, 0.3]} />
         <meshStandardMaterial
-          color={active ? color : darkColor}
+          color={active ? activeColor : darkColor}
           metalness={0.3}
           roughness={0.6}
-          emissive={active ? color : darkColor}
+          emissive={active ? activeColor : darkColor}
           emissiveIntensity={active ? 0.4 : 0.1}
         />
       </mesh>

@@ -7,7 +7,10 @@
 
 import { ec2Servers, rdsInstances, eksCluster, mskCluster, managedServices, Status } from './infrastructure'
 
-const PROXY_URL = 'http://127.0.0.1:9876'
+const base = import.meta.env.BASE_URL
+const PROXY_URL = base !== '/'
+  ? `${window.location.origin}${base.replace(/\/$/, '')}`
+  : `${window.location.protocol}//${window.location.hostname}:9876`
 
 let proxyAvailable = null // null = unknown, true/false after first check
 
@@ -53,6 +56,16 @@ export async function fetchInfraStatus() {
     managed: simulateStatus(managedServices),
     ts: Date.now(),
     simulated: true,
+  }
+}
+
+export async function fetchVpcPeering() {
+  if (!proxyAvailable) return { peerings: [] }
+  try {
+    const res = await fetch(`${PROXY_URL}/api/vpc-peering`)
+    return res.json()
+  } catch {
+    return { peerings: [] }
   }
 }
 

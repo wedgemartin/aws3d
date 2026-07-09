@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import * as THREE from 'three'
 import { Text } from '@react-three/drei'
 import { azs as defaultAzs, ec2Servers as defaultEc2, rdsInstances as defaultRds, eksCluster as defaultEks, mskCluster as defaultMsk, categoryColors } from '../data/infrastructure'
-import { fetchInfraStatus } from '../data/fetchStatus'
+import { fetchInfraStatus, fetchVpcPeering } from '../data/fetchStatus'
 import Cage from './Cage'
 import Rack from './Rack'
 import Interconnect from './Interconnect'
@@ -18,6 +18,7 @@ const RACK_GAP = 1
 const ROW_GAP = 12  // generous space between rows
 const MAX_RACKS_PER_ROW = 10
 const POLL_INTERVAL = 15000
+const REGION_GAP = 20
 
 // Compute layout: place racks sequentially, wrap after MAX_RACKS_PER_ROW columns
 function layoutRacks(groups, getItems) {
@@ -60,7 +61,6 @@ function groupBy(arr, key) {
 function guessRole(name) {
   if (!name) return 'other'
   const n = name.toLowerCase()
-  // EKS managed nodes often have no Name tag — just instance ID
   if (n.startsWith('i-')) return 'eks-node'
   if (n.includes('eks') || n.includes('node')) return 'eks-node'
   if (n.includes('vpn') || n.includes('bastion')) return 'vpn'
@@ -76,130 +76,40 @@ function guessRole(name) {
   return 'other'
 }
 
-export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetching }) {
-  const [ec2, setEc2] = useState(defaultEc2)
-  const [rds, setRds] = useState(defaultRds)
-  const [eks, setEks] = useState(defaultEks)
-  const [msk, setMsk] = useState(defaultMsk)
-  const [elbs, setElbs] = useState([])
-  const [efsList, setEfsList] = useState([])
-  const [opensearchList, setOpensearchList] = useState([])
-  const [subnets, setSubnets] = useState({})
-  const [pinned, setPinned] = useState(null)
-  const [elbTargets, setElbTargets] = useState([])
-  const [elbPortGroups, setElbPortGroups] = useState([])
-  const [expandedEks, setExpandedEks] = useState(null)
-  const [eksClickPos, setEksClickPos] = useState([0, 9, 0])
-  const [loaded, setLoaded] = useState(false)
+const azSuffix = (az) => {
+  if (!az) return 'az-a'
+  return `az-${az.slice(-1)}`
+}
 
-  const poll = useCallback(async () => {
-    try {
-      onFetching(true)
-      const data = await fetchInfraStatus()
-      if (data.simulated) { setLoaded(true); onLoaded(); onFetching(false); return }
+// Process a single region's raw data into the format needed for rendering
+function processRegionData(data) {
+  const ec2 = (data.ec2 || []).map(i => ({ ...i, az: azSuffix(i.az), role: i.role || guessRole(i.name) }))
+  const rds = (data.rds || []).map(r => ({ ...r, az: azSuffix(r.az) }))
 
-      const azSuffix = (az) => {
-        if (!az) return 'az-a'
-        return `az-${az.slice(-1)}`
-      }
-
-      // For live data, always update state (even if empty) to clear sample data
-      if (data.ec2) {
-        setEc2(data.ec2.map(i => ({ ...i, az: azSuffix(i.az), role: i.role || guessRole(i.name) })))
-      }
-      if (data.rds) {
-        setRds(data.rds.map(r => ({ ...r, az: azSuffix(r.az) })))
-      }
-      if (data.eks?.length) {
-        const eksNodeAzs = (data.ec2 || []).filter(i => guessRole(i.name) === 'eks-node').map(i => azSuffix(i.az))
-        const azList = eksNodeAzs.length > 0 ? [...new Set(eksNodeAzs)] : ['az-a']
-        setEks(prev => ({ ...prev, status: data.eks[0]?.status || prev.status, name: data.eks[0]?.name || prev.name, azs: azList }))
-      } else if (data.eks) {
-        setEks({ id: null, name: '', azs: [], status: 'down' })
-      }
-      if (data.msk?.length) setMsk(prev => ({ ...prev, status: data.msk[0]?.status || prev.status, name: data.msk[0]?.name || prev.name }))
-      else if (data.msk) setMsk({ id: null, name: '', azs: [], status: 'down' })
-      if (data.elb) setElbs(data.elb.map(lb => ({ ...lb, az: azSuffix(lb.az) })))
-      if (data.efs) setEfsList(data.efs)
-      if (data.opensearch) setOpensearchList(data.opensearch.map(d => ({ id: d.id, name: d.name, status: d.status, version: d.version, instanceType: d.instanceType })))
-      if (data.subnets) setSubnets(data.subnets)
-      setLoaded(true)
-      onLoaded()
-      onFetching(false)
-    } catch (e) {
-      console.warn('Poll failed:', e.message)
-      onFetching(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    poll()
-    const id = setInterval(poll, POLL_INTERVAL)
-
-    // Expose fast-poll trigger for EC2 actions
-    window.__aws3dFastPoll = () => {
-      let count = 0
-      const fast = setInterval(() => {
-        poll()
-        count++
-        if (count >= 10) clearInterval(fast) // 10 polls × 3s = 30s of fast polling
-      }, 3000)
-    }
-
-    return () => { clearInterval(id); delete window.__aws3dFastPoll }
-  }, [poll])
-
-  // Click handler: pin a node or clear pin
-  const handleSelect = (data) => {
-    if (data === null) {
-      // hover out — only update HUD if nothing is pinned
-      if (!pinned) onSelect(null)
-      return
-    }
-    onSelect(data)
+  let eks = { id: null, name: '', azs: [], status: 'down' }
+  if (data.eks?.length) {
+    const eksNodeAzs = ec2.filter(i => guessRole(i.name) === 'eks-node').map(i => i.az)
+    const azList = eksNodeAzs.length > 0 ? [...new Set(eksNodeAzs)] : ['az-a']
+    eks = { status: data.eks[0]?.status || 'healthy', name: data.eks[0]?.name || '', azs: azList }
   }
 
-  const handleClick = (data) => {
-    if (pinned?.id === data.id) {
-      setPinned(null)
-      setElbTargets([])
-      setElbPortGroups([])
-      onSelect(null)
-      onPin(null)
-    } else {
-      setPinned(data)
-      onSelect(data)
-      onPin(data)
-      setElbTargets([])
-      setElbPortGroups([])
-
-      // EKS cluster click — toggle mezzanine
-      if (data.cluster && data.cluster === eks.name) {
-        setExpandedEks(prev => prev === data.cluster ? null : data.cluster)
-        if (data._clickPoint) setEksClickPos(data._clickPoint)
-      }
-
-      // If it's an ELB, fetch targets on-demand
-      if (data.arn) {
-        onFetching(true)
-        fetch(`http://127.0.0.1:9876/api/elb/targets?arn=${encodeURIComponent(data.arn)}`)
-          .then(r => r.json())
-          .then(d => { setElbTargets(d.targets || []); setElbPortGroups(d.portGroups || []); onFetching(false) })
-          .catch(e => { console.warn('ELB target fetch failed:', e); onFetching(false) })
-      }
-    }
+  let msk = { id: null, name: '', azs: [], status: 'down' }
+  if (data.msk?.length) {
+    msk = { status: data.msk[0]?.status || 'healthy', name: data.msk[0]?.name || '', azs: data.msk[0]?.azs || [] }
   }
 
-  // Click on empty space to clear pin
-  const handleBgClick = (e) => {
-    if (e.object?.userData?.isBackground) {
-      setPinned(null)
-      setElbTargets([])
-      onSelect(null)
-      onPin(null)
-    }
-  }
+  const elbs = (data.elb || []).map(lb => ({ ...lb, az: azSuffix(lb.az) }))
+  const efs = data.efs || []
+  const opensearch = (data.opensearch || []).map(d => ({ id: d.id, name: d.name, status: d.status, version: d.version, instanceType: d.instanceType }))
+  const aurora = (data.aurora || []).map(c => ({ ...c, az: azSuffix(c.az) }))
+  const subnets = data.subnets || {}
 
+  return { ec2, rds, eks, msk, elbs, efs, opensearch, aurora, subnets }
+}
+
+// Compute per-region layout data (AZs, cages, positions)
+function computeRegionLayout(regionProcessed, viewMode) {
+  const { ec2, rds, eks, msk, elbs, efs, opensearch, subnets } = regionProcessed
   const serversByAz = groupBy(ec2, 'az')
 
   // Derive AZ list dynamically from all data sources
@@ -236,22 +146,20 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
       ? groupBy(nonEks, 'subnetId')[key]
       : groupBy(nonEks, 'role')[key]
 
-    // Count all racks: managed services + EC2
     let totalRackCount = groups.length
     if (eks.azs.includes(az.id)) totalRackCount++
     if (msk.azs.includes(az.id)) totalRackCount++
     if ((rdsByAz[az.id] || []).length > 0) totalRackCount++
     if (az.id === activeAzs[0]?.id && elbs.length > 0) totalRackCount++
-    if (az.id === activeAzs[0]?.id && efsList.length > 0) totalRackCount++
-    if (az.id === activeAzs[0]?.id && opensearchList.length > 0) totalRackCount++
+    if (az.id === activeAzs[0]?.id && efs.length > 0) totalRackCount++
+    if (az.id === activeAzs[0]?.id && opensearch.length > 0) totalRackCount++
 
-    // Build a combined key list for layout calculation
     const allKeys = []
     if (eks.azs.includes(az.id)) allKeys.push('__eks')
     if (msk.azs.includes(az.id)) allKeys.push('__msk')
     if ((rdsByAz[az.id] || []).length > 0) allKeys.push('__rds')
-    if (az.id === activeAzs[0]?.id && efsList.length > 0) allKeys.push('__efs')
-    if (az.id === activeAzs[0]?.id && opensearchList.length > 0) allKeys.push('__opensearch')
+    if (az.id === activeAzs[0]?.id && efs.length > 0) allKeys.push('__efs')
+    if (az.id === activeAzs[0]?.id && opensearch.length > 0) allKeys.push('__opensearch')
     if (az.id === activeAzs[0]?.id && elbs.length > 0) allKeys.push('__elb')
     allKeys.push(...groups)
 
@@ -259,8 +167,8 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
       if (key === '__eks') return [{ id: 'x' }]
       if (key === '__msk') return [{ id: 'x' }]
       if (key === '__rds') return rdsByAz[az.id]
-      if (key === '__efs') return efsList
-      if (key === '__opensearch') return opensearchList
+      if (key === '__efs') return efs
+      if (key === '__opensearch') return opensearch
       if (key === '__elb') return elbs
       return getItems(key)
     }
@@ -278,40 +186,225 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
     azPositions[azId] = cursor + w / 2
     cursor += w + CAGE_GAP
   }
-  // Center all AZs around origin
   const totalSpan = cursor - CAGE_GAP
   const offset = totalSpan / 2
   for (const azId of Object.keys(azPositions)) {
     azPositions[azId] -= offset
   }
 
+  return { activeAzs, serversByAz, rdsByAz, rdsWithStandbys, cageSizes, azPositions, totalSpan }
+}
 
+export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetching }) {
+  // Legacy flat state for backward compat (populated from first/only region)
+  const [ec2, setEc2] = useState(defaultEc2)
+  const [rds, setRds] = useState(defaultRds)
+  const [eks, setEks] = useState(defaultEks)
+  const [msk, setMsk] = useState(defaultMsk)
+  const [elbs, setElbs] = useState([])
+  const [efsList, setEfsList] = useState([])
+  const [opensearchList, setOpensearchList] = useState([])
+  const [subnets, setSubnets] = useState({})
+
+  // Multi-region state
+  const [regionData, setRegionData] = useState({})
+  const [vpcPeerings, setVpcPeerings] = useState([])
+  const hasLiveDataRef = useRef(false)
+
+  const [pinned, setPinned] = useState(null)
+  const [elbTargets, setElbTargets] = useState([])
+  const [elbPortGroups, setElbPortGroups] = useState([])
+  const [expandedEks, setExpandedEks] = useState(null)
+  const [eksClickPos, setEksClickPos] = useState([0, 9, 0])
+  const [eksViewMode, setEksViewMode] = useState('namespace')
+  const [loaded, setLoaded] = useState(false)
+
+  const regionPositionsRef = useRef({})
+
+  const poll = useCallback(async () => {
+    try {
+      onFetching(true)
+      const data = await fetchInfraStatus()
+
+      if (data.simulated) {
+        // Only use sample data if we haven't received live data yet
+        if (!hasLiveDataRef.current) {
+          setRegionData({ sample: { ec2: defaultEc2, rds: defaultRds, eks: defaultEks, msk: defaultMsk, elbs: [], efs: [], opensearch: [], subnets: {} } })
+        }
+        setLoaded(true)
+        onLoaded()
+        onFetching(false)
+        return
+      }
+
+      if (data.regions) {
+        // Multi-region response
+        hasLiveDataRef.current = true
+        const processed = {}
+        for (const [regionName, regionRaw] of Object.entries(data.regions)) {
+          processed[regionName] = processRegionData(regionRaw)
+        }
+        setRegionData(processed)
+
+        // Populate legacy flat state from first region for backward compat
+        const firstRegionKey = Object.keys(processed)[0]
+        if (firstRegionKey) {
+          const first = processed[firstRegionKey]
+          setEc2(first.ec2)
+          setRds(first.rds)
+          setEks(first.eks)
+          setMsk(first.msk)
+          setElbs(first.elbs)
+          setEfsList(first.efs)
+          setOpensearchList(first.opensearch)
+          setSubnets(first.subnets)
+        }
+      } else {
+        // Legacy flat response (single region)
+        hasLiveDataRef.current = true
+        const processed = processRegionData(data)
+        setRegionData({ default: processed })
+        setEc2(processed.ec2)
+        setRds(processed.rds)
+        setEks(processed.eks)
+        setMsk(processed.msk)
+        setElbs(processed.elbs)
+        setEfsList(processed.efs)
+        setOpensearchList(processed.opensearch)
+        setSubnets(processed.subnets)
+      }
+
+      setLoaded(true)
+      onLoaded()
+      onFetching(false)
+    } catch (e) {
+      console.warn('Poll failed:', e.message)
+      onFetching(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    poll()
+    const id = setInterval(poll, POLL_INTERVAL)
+    window.__aws3dFastPoll = () => {
+      let count = 0
+      const fast = setInterval(() => {
+        poll()
+        count++
+        if (count >= 10) clearInterval(fast)
+      }, 3000)
+    }
+    return () => { clearInterval(id); delete window.__aws3dFastPoll }
+  }, [poll])
+
+  // Fetch VPC peering separately (once initially, then every 5 minutes)
+  useEffect(() => {
+    const fetchPeering = () => {
+      fetchVpcPeering().then(d => setVpcPeerings(d.peerings || []))
+    }
+    // Delay first fetch to let creds initialize
+    const timeout = setTimeout(fetchPeering, 5000)
+    const id = setInterval(fetchPeering, 300000)
+    return () => { clearTimeout(timeout); clearInterval(id) }
+  }, [])
+
+  // N key toggles EKS node view (only when mezzanine is open)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.ctrlKey || e.metaKey) return
+      if ((e.key === 'n' || e.key === 'N') && expandedEks) {
+        setEksViewMode(m => m === 'namespace' ? 'node' : 'namespace')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [expandedEks])
+
+  // Click handler: pin a node or clear pin
+  const handleSelect = (data) => {
+    if (data === null) {
+      if (!pinned) onSelect(null)
+      return
+    }
+    onSelect(data)
+  }
+
+  const handleClick = (data) => {
+    if (pinned?.id === data.id) {
+      setPinned(null)
+      setElbTargets([])
+      setElbPortGroups([])
+      onSelect(null)
+      onPin(null)
+    } else {
+      setPinned(data)
+      onSelect(data)
+      onPin(data)
+      setElbTargets([])
+      setElbPortGroups([])
+
+      // EKS cluster click — toggle mezzanine
+      if (data.cluster && data.cluster === eks.name) {
+        setExpandedEks(prev => prev === data.cluster ? null : data.cluster)
+        if (data._clickPoint) setEksClickPos(data._clickPoint)
+      }
+
+      // If it's an ELB, fetch targets on-demand
+      if (data.arn) {
+        onFetching(true)
+        const _base = import.meta.env.BASE_URL
+        const _proxyUrl = _base !== '/' ? `${window.location.origin}${_base.replace(/\/$/, '')}` : `${window.location.protocol}//${window.location.hostname}:9876`
+        fetch(`${_proxyUrl}/api/elb/targets?arn=${encodeURIComponent(data.arn)}`)
+          .then(r => r.json())
+          .then(d => { setElbTargets(d.targets || []); setElbPortGroups(d.portGroups || []); onFetching(false) })
+          .catch(e => { console.warn('ELB target fetch failed:', e); onFetching(false) })
+      }
+    }
+  }
+
+  // Click on empty space to clear pin
+  const handleBgClick = (e) => {
+    if (e.object?.userData?.isBackground) {
+      setPinned(null)
+      setElbTargets([])
+      onSelect(null)
+      onPin(null)
+    }
+  }
 
   // Determine which cluster group the pinned node belongs to for interconnect
   const interconnectNodes = (() => {
     if (!pinned) return []
     const id = pinned.id
-    // EKS nodes — all EKS items across AZs are siblings (only show interconnect if mezzanine not open)
     if ((id.startsWith('eks-') || pinned.cluster === eks.name) && !expandedEks) {
       const eksNodeIds = ec2.filter(s => (s.role || guessRole(s.name)) === 'eks-node').map(s => s.id)
       if (eksNodeIds.length > 0) return eksNodeIds
       return eks.azs.map(az => `eks-${az}`)
     }
-    // MSK brokers
     if (id.startsWith('msk-')) return msk.azs.map(az => `msk-${az}`)
-    // RDS Multi-AZ — link primary to its standby
     const rdsItem = rds.find(r => r.id === id)
     if (rdsItem?.multiAz && rdsItem.secondaryAz) {
       const standbyId = `${id}-standby`
       return [id, standbyId]
     }
-    // ELB → target instances (from port groups, not flat list)
     if (pinned.arn && elbPortGroups.length > 0) {
       const targetIds = elbPortGroups.flatMap(pg => pg.targets.map(t => t.instanceId)).filter(Boolean)
       return [...new Set(targetIds)]
     }
     if (pinned.arn && elbTargets.length > 0) {
       return [...new Set(elbTargets.map(t => t.instanceId).filter(Boolean))]
+    }
+    // Aurora Global — connect all clusters with the same globalClusterId across regions
+    if (pinned.globalClusterId) {
+      const siblings = []
+      for (const rd of Object.values(regionData)) {
+        for (const c of (rd.aurora || [])) {
+          if (c.globalClusterId === pinned.globalClusterId) {
+            siblings.push(c.id)
+          }
+        }
+      }
+      if (siblings.length > 1) return siblings
     }
     return []
   })()
@@ -332,6 +425,79 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
 
   if (!loaded) return null
 
+  // Compute layout for each region
+  const regionKeys = Object.keys(regionData)
+  const isMultiRegion = regionKeys.length > 1
+
+  const regionLayouts = {}
+  for (const regionKey of regionKeys) {
+    const rd = regionData[regionKey]
+    if (rd.ec2 || rd.rds || rd.eks || rd.msk) {
+      regionLayouts[regionKey] = computeRegionLayout(rd, viewMode)
+    }
+  }
+
+  // Compute region Z positions (facing each other along Z axis)
+  const regionPositions = {} // { regionKey: { x, z } }
+  if (isMultiRegion) {
+    const regionDepths = {}
+    for (const regionKey of regionKeys) {
+      const layout = regionLayouts[regionKey]
+      if (!layout) continue
+      regionDepths[regionKey] = Math.max(...layout.activeAzs.map(az => layout.cageSizes[az.id]?.depth || MIN_CAGE_DEPTH)) + 10
+    }
+    // Stack regions along Z with gap between them
+    let zCursor = 0
+    for (const regionKey of regionKeys) {
+      const layout = regionLayouts[regionKey]
+      if (!layout) continue
+      const depth = regionDepths[regionKey]
+      regionPositions[regionKey] = { x: 0, z: zCursor + depth / 2 }
+      zCursor += depth + REGION_GAP
+    }
+    // Center around origin
+    const totalZ = zCursor - REGION_GAP
+    const zOffset = totalZ / 2
+    for (const key of Object.keys(regionPositions)) {
+      regionPositions[key].z -= zOffset
+    }
+  } else {
+    regionPositions[regionKeys[0]] = { x: 0, z: 0 }
+  }
+  // Legacy X positions for backward compat
+  const regionXPositions = {}
+  for (const key of Object.keys(regionPositions)) {
+    regionXPositions[key] = regionPositions[key].x
+  }
+  // Center all regions around origin
+  const totalRegionSpan = (() => {
+    if (!isMultiRegion) {
+      const layout = regionLayouts[regionKeys[0]]
+      return layout ? layout.totalSpan : 0
+    }
+    return Math.max(...Object.values(regionLayouts).map(l => l.totalSpan + 10))
+  })()
+  const regionOffset = 0
+  regionPositionsRef.current = regionPositions
+
+  // For single region, compute a global floor size
+  const singleRegionLayout = !isMultiRegion ? regionLayouts[regionKeys[0]] : null
+  const globalTotalSpan = singleRegionLayout ? singleRegionLayout.totalSpan : totalRegionSpan
+  const globalMaxDepth = (() => {
+    if (!isMultiRegion) {
+      return Math.max(...Object.values(regionLayouts).map(l =>
+        Math.max(...l.activeAzs.map(az => l.cageSizes[az.id]?.depth || MIN_CAGE_DEPTH))
+      ), MIN_CAGE_DEPTH)
+    }
+    // Multi-region: total Z span including gap
+    const zPositions = Object.values(regionPositions).map(p => p.z)
+    const minZ = Math.min(...zPositions)
+    const maxZ = Math.max(...zPositions)
+    return (maxZ - minZ) + Math.max(...Object.values(regionLayouts).map(l =>
+      Math.max(...l.activeAzs.map(az => l.cageSizes[az.id]?.depth || MIN_CAGE_DEPTH))
+    ), MIN_CAGE_DEPTH) + REGION_GAP
+  })()
+
   return (
     <group>
       {/* Floor — clickable to clear pin */}
@@ -342,192 +508,213 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
         onClick={handleBgClick}
         userData={{ isBackground: true }}
       >
-        <planeGeometry args={[totalSpan + 20, Math.max(...activeAzs.map(az => cageSizes[az.id]?.depth || MIN_CAGE_DEPTH)) + 20]} />
+        <planeGeometry args={[globalTotalSpan + 40, globalMaxDepth + 20]} />
         <meshStandardMaterial color="#0d0d1a" />
       </mesh>
 
-      {/* AZ Cages */}
-      {activeAzs.map((az) => {
-        const x = azPositions[az.id]
-        const CAGE_WIDTH = cageSizes[az.id]?.width || MIN_CAGE_WIDTH
-        const CAGE_DEPTH = cageSizes[az.id]?.depth || MIN_CAGE_DEPTH
-        const azServers = serversByAz[az.id] || []
-        const azRds = rdsByAz[az.id] || []
-        const serversByRole = groupBy(azServers.filter(s => s.role !== 'eks-node'), 'role')
-        const roles = Object.keys(serversByRole)
+      {regionKeys.map((regionKey) => {
+        const rd = regionData[regionKey]
+        const layout = regionLayouts[regionKey]
+        if (!layout || !rd) return null
 
-        // Subnet grouping for network mode
-        const nonEksServers = azServers.filter(s => s.role !== 'eks-node')
-        const serversBySubnet = groupBy(nonEksServers, 'subnetId')
-        const subnetKeys = Object.keys(serversBySubnet)
+        const regionX = regionPositions[regionKey]?.x || 0
+        const regionZ = regionPositions[regionKey]?.z || 0
+        const { activeAzs: regAzs, serversByAz: regServersByAz, rdsByAz: regRdsByAz, rdsWithStandbys: regRdsWithStandbys, cageSizes: regCageSizes, azPositions: regAzPositions, totalSpan: regTotalSpan } = layout
+        const regEc2 = rd.ec2
+        const regRds = rd.rds
+        const regEks = rd.eks
+        const regMsk = rd.msk
+        const regElbs = rd.elbs
+        const regEfs = rd.efs
+        const regOpensearch = rd.opensearch
+        const regAurora = rd.aurora || []
+        const regSubnets = rd.subnets
 
-        // EKS items — use actual EC2 nodes if available, otherwise show cluster name
-        const eksNodes = azServers.filter(s => s.role === 'eks-node')
-        const eksItems = eks.azs.includes(az.id)
-          ? eksNodes.length > 0
-            ? eksNodes.map(n => ({ id: n.id, name: `${eks.name} (${n.ip})`, status: n.status, ip: n.ip, cluster: eks.name }))
-            : [{ id: `eks-${az.id}`, name: eks.name, status: eks.status, cluster: eks.name }]
-          : []
-
-        // MSK items for this AZ
-        const mskItems = msk.azs.includes(az.id) ? [{
-          id: `msk-${az.id}`,
-          name: msk.name,
-          status: msk.status,
-          cluster: msk.name,
-        }] : []
+        const regionHeight = 22
+        const regionWidth = regTotalSpan + 10
+        const regionDepth = Math.max(...regAzs.map(az => regCageSizes[az.id]?.depth || MIN_CAGE_DEPTH)) + 10
 
         return (
-          <group key={az.id} position={[x, 0, 0]}>
-            <Cage width={CAGE_WIDTH} depth={CAGE_DEPTH} label={az.label} />
+          <group key={regionKey} position={[regionX, 0, regionZ]}>
+            {/* Region enclosure — only shown for multi-region */}
+            {isMultiRegion && (
+              <group>
+                <lineSegments position={[0, regionHeight / 2, 0]}>
+                  <edgesGeometry args={[new THREE.BoxGeometry(regionWidth, regionHeight, regionDepth)]} />
+                  <lineBasicMaterial color="#22ccaa" />
+                </lineSegments>
+                <Text
+                  position={[0, regionHeight + 1, 0]}
+                  fontSize={1.8}
+                  color="#22ccaa"
+                  anchorX="center"
+                  anchorY="bottom"
+                >
+                  {regionKey}
+                </Text>
+              </group>
+            )}
 
-            {/* VPC floor zones */}
+            {/* AZ Cages */}
+            {regAzs.map((az) => {
+              const x = regAzPositions[az.id]
+              const CAGE_WIDTH = regCageSizes[az.id]?.width || MIN_CAGE_WIDTH
+              const CAGE_DEPTH = regCageSizes[az.id]?.depth || MIN_CAGE_DEPTH
+              const azServers = regServersByAz[az.id] || []
+              const azRds = regRdsByAz[az.id] || []
+              const serversByRole = groupBy(azServers.filter(s => s.role !== 'eks-node'), 'role')
+              const roles = Object.keys(serversByRole)
+
+              const nonEksServers = azServers.filter(s => s.role !== 'eks-node')
+              const serversBySubnet = groupBy(nonEksServers, 'subnetId')
+              const subnetKeys = Object.keys(serversBySubnet)
+
+              const eksNodes = azServers.filter(s => s.role === 'eks-node')
+              const eksItems = regEks.azs.includes(az.id)
+                ? eksNodes.length > 0
+                  ? eksNodes.map(n => ({ id: n.id, name: `${regEks.name} (${n.ip})`, status: n.status, ip: n.ip, cluster: regEks.name }))
+                  : [{ id: `eks-${az.id}`, name: regEks.name, status: regEks.status, cluster: regEks.name }]
+                : []
+
+              const mskItems = regMsk.azs.includes(az.id) ? [{
+                id: `msk-${az.id}`,
+                name: regMsk.name,
+                status: regMsk.status,
+                cluster: regMsk.name,
+              }] : []
+
+              return (
+                <group key={az.id} position={[x, 0, 0]}>
+                  <Cage width={CAGE_WIDTH} depth={CAGE_DEPTH} label={az.label} />
+
+                  {/* === ALL RACKS UNIFIED LAYOUT === */}
+                  {(() => {
+                    const allRacks = []
+
+                    if (eksItems.length > 0) {
+                      allRacks.push({ key: 'eks', label: 'EKS', color: categoryColors.eks.bright, darkColor: categoryColors.eks.dark, category: 'eks', items: eksItems })
+                    }
+                    if (mskItems.length > 0) {
+                      allRacks.push({ key: 'msk', label: 'MSK', color: categoryColors.msk.bright, darkColor: categoryColors.msk.dark, category: 'msk', items: mskItems })
+                    }
+                    if (azRds.length > 0) {
+                      allRacks.push({ key: 'rds', label: 'RDS', color: categoryColors.rds.bright, darkColor: categoryColors.rds.dark, category: 'rds', items: azRds.map(r => ({ id: r.id, name: `${r.name}${r.engine ? ` (${r.engine})` : ''}`, status: r.isStandby ? 'unknown' : r.status, isStandby: r.isStandby, multiAz: r.multiAz, endpoint: r.endpoint })) })
+                    }
+                    // Aurora rack (shown in first AZ of region)
+                    if (az.id === regAzs[0]?.id && regAurora.length > 0) {
+                      allRacks.push({ key: 'aurora', label: 'Aurora', color: categoryColors.aurora.bright, darkColor: categoryColors.aurora.dark, category: 'aurora', items: regAurora.map(c => ({ id: c.id, name: `${c.name} (${c.role})`, status: c.status, globalClusterId: c.globalClusterId, role: c.role, endpoint: c.endpoint, readerEndpoint: c.readerEndpoint })) })
+                    }
+                    if (az.id === regAzs[0]?.id && regEfs.length > 0) {
+                      allRacks.push({ key: 'efs', label: 'EFS', color: categoryColors.efs.bright, darkColor: categoryColors.efs.dark, category: 'efs', items: regEfs.map(fs => ({ id: fs.id, name: fs.name, status: fs.status })) })
+                    }
+                    if (az.id === regAzs[0]?.id && regOpensearch.length > 0) {
+                      allRacks.push({ key: 'opensearch', label: 'OpenSearch', color: categoryColors.opensearch.bright, darkColor: categoryColors.opensearch.dark, category: 'opensearch', items: regOpensearch.map(d => ({ id: d.id, name: `${d.name} (${d.version || ''})`, status: d.status })) })
+                    }
+                    if (az.id === regAzs[0]?.id && regElbs.length > 0) {
+                      allRacks.push({ key: 'elb', label: 'ELB', color: categoryColors.network.bright, darkColor: categoryColors.network.dark, category: 'elb', items: regElbs.map(lb => { const t = lb.type === 'application' ? 'ALB' : lb.type === 'network' ? 'NLB' : 'CLB'; return { id: lb.id, name: `${lb.name} (${t})`, status: lb.status, arn: lb.id, dnsName: lb.dnsName } }) })
+                    }
+
+                    // EC2 racks by role or subnet
+                    const groups = viewMode === 'subnet' ? subnetKeys : roles
+                    const getItems = (key) => viewMode === 'subnet' ? serversBySubnet[key] : serversByRole[key]
+                    const getLabel = (key) => {
+                      if (viewMode === 'subnet') {
+                        const sub = regSubnets[key]
+                        return sub ? (sub.name !== key ? sub.name : sub.cidr) : key?.slice(0, 12) || 'unknown'
+                      }
+                      return key
+                    }
+                    const subnetColor = (key, idx) => {
+                      if (viewMode !== 'subnet') return categoryColors.ec2.bright
+                      const hue = (idx * 137.5) % 360
+                      return `hsl(${hue}, 50%, 55%)`
+                    }
+                    const subnetDark = (key, idx) => {
+                      if (viewMode !== 'subnet') return categoryColors.ec2.dark
+                      const hue = (idx * 137.5) % 360
+                      return `hsl(${hue}, 30%, 15%)`
+                    }
+
+                    for (const key of groups) {
+                      const items = getItems(key)
+                      if (!items?.length) continue
+                      allRacks.push({ key, label: getLabel(key), color: subnetColor(key, allRacks.length), darkColor: subnetDark(key, allRacks.length), category: 'ec2', items: items.map(s => ({ id: s.id, name: s.name, status: s.status, ip: s.ip, type: s.type, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes, subnet: regSubnets[s.subnetId]?.cidr || s.subnetId, subnetId: s.subnetId, vpcId: s.vpcId, securityGroups: s.securityGroups })) })
+                    }
+
+                    // Layout all racks through the same engine
+                    const rackLayout = layoutRacks(allRacks.map(r => r.key), (key) => allRacks.find(r => r.key === key)?.items)
+                    const offsetX = -CAGE_WIDTH / 2 + 4
+                    const offsetZ = -CAGE_DEPTH / 2 + 4
+
+                    return rackLayout.positions.map((lp, i) => {
+                      const rack = allRacks.find(r => r.key === lp.key)
+                      if (!rack) return null
+                      const pos = [offsetX + lp.x, 0, offsetZ + lp.z]
+                      return (
+                        <Rack
+                          key={rack.key}
+                          position={pos}
+                          label={rack.label}
+                          color={rack.color}
+                          darkColor={rack.darkColor}
+                          category={rack.category}
+                          items={rack.items}
+                          onSelect={handleSelect}
+                          onClick={handleClick}
+                          pinnedId={pinned?.id}
+                          highlightIds={interconnectNodes}
+                          highlightColors={highlightColors}
+                        />
+                      )
+                    })
+                  })()}
+                </group>
+              )
+            })}
+
+            {/* VPC floor zones — span across all AZs in the region */}
             {(() => {
-              const vpcIds = [...new Set(azServers.map(s => s.vpcId).filter(Boolean))]
-              const vpcCount = vpcIds.length
-              if (vpcCount === 0) return null
-              const zoneWidth = (CAGE_WIDTH - 2) / vpcCount
-              return vpcIds.map((vpcId, vi) => {
+              const allVpcIds = [...new Set(regEc2.map(s => s.vpcId).filter(Boolean))]
+              if (allVpcIds.length === 0) return null
+              // Compute the span: from leftmost AZ edge to rightmost AZ edge
+              const azXs = regAzs.map(az => regAzPositions[az.id])
+              const leftAz = regAzs.reduce((a, b) => regAzPositions[a.id] < regAzPositions[b.id] ? a : b)
+              const rightAz = regAzs.reduce((a, b) => regAzPositions[a.id] > regAzPositions[b.id] ? a : b)
+              const leftEdge = regAzPositions[leftAz.id] - (regCageSizes[leftAz.id]?.width || MIN_CAGE_WIDTH) / 2
+              const rightEdge = regAzPositions[rightAz.id] + (regCageSizes[rightAz.id]?.width || MIN_CAGE_WIDTH) / 2
+              const spanWidth = rightEdge - leftEdge
+              const spanCenterX = (leftEdge + rightEdge) / 2
+              const maxDepth = Math.max(...regAzs.map(az => regCageSizes[az.id]?.depth || MIN_CAGE_DEPTH))
+              const vpcCount = allVpcIds.length
+              const zoneDepth = (maxDepth - 2) / vpcCount
+
+              return allVpcIds.map((vpcId, vi) => {
                 const hue = (vi * 220) % 360
-                const isNetMode = viewMode === 'subnet'
+                const zOffset = -maxDepth / 2 + 1 + zoneDepth * vi + zoneDepth / 2
                 return (
-                  <group key={vpcId}>
-                    {/* Floor zone */}
-                    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[
-                      -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
-                      0.03,
-                      0
-                    ]}>
-                      <planeGeometry args={[zoneWidth - 0.5, CAGE_DEPTH - 2]} />
+                  <group key={`vpc-${vpcId}`}>
+                    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[spanCenterX, 0.02, zOffset]}>
+                      <planeGeometry args={[spanWidth - 1, zoneDepth - 0.5]} />
                       <meshStandardMaterial
                         color={`hsl(${hue}, 40%, 12%)`}
                         transparent
-                        opacity={isNetMode ? 0.6 : 0.2}
+                        opacity={0.25}
                       />
                     </mesh>
-                    {/* VPC border */}
-                    <lineSegments position={[
-                      -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
-                      0.04,
-                      0
-                    ]} rotation={[-Math.PI / 2, 0, 0]}>
-                      <edgesGeometry args={[new THREE.PlaneGeometry(zoneWidth - 0.5, CAGE_DEPTH - 2)]} />
-                      <lineBasicMaterial color={`hsl(${hue}, 50%, ${isNetMode ? 45 : 25}%)`} />
+                    <lineSegments position={[spanCenterX, 0.03, zOffset]} rotation={[-Math.PI / 2, 0, 0]}>
+                      <edgesGeometry args={[new THREE.PlaneGeometry(spanWidth - 1, zoneDepth - 0.5)]} />
+                      <lineBasicMaterial color={`hsl(${hue}, 50%, 35%)`} />
                     </lineSegments>
-                    {/* VPC label on floor — front */}
                     <Text
                       rotation={[-Math.PI / 2, 0, 0]}
-                      position={[
-                        -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
-                        0.05,
-                        -CAGE_DEPTH / 2 + 2
-                      ]}
-                      fontSize={isNetMode ? 0.8 : 0.5}
-                      color={`hsl(${hue}, 50%, ${isNetMode ? 55 : 30}%)`}
-                      anchorX="center"
+                      position={[leftEdge + 2, 0.04, zOffset]}
+                      fontSize={0.6}
+                      color={`hsl(${hue}, 50%, 40%)`}
+                      anchorX="left"
                     >
-                      {vpcId.slice(0, 12)}
-                    </Text>
-                    {/* VPC label on floor — back */}
-                    <Text
-                      rotation={[-Math.PI / 2, 0, 0]}
-                      position={[
-                        -CAGE_WIDTH / 2 + 1 + zoneWidth * vi + zoneWidth / 2,
-                        0.05,
-                        CAGE_DEPTH / 2 - 2
-                      ]}
-                      fontSize={isNetMode ? 0.8 : 0.5}
-                      color={`hsl(${hue}, 50%, ${isNetMode ? 55 : 30}%)`}
-                      anchorX="center"
-                    >
-                      {vpcId.slice(0, 12)}
+                      {vpcId}
                     </Text>
                   </group>
-                )
-              })
-            })()}
-
-            {/* EKS rack */}
-            {/* MSK rack */}
-            {/* RDS rack */}
-            {/* EC2 racks */}
-            {/* EFS rack */}
-            {/* ELB rack */}
-            {/* === ALL RACKS UNIFIED LAYOUT === */}
-            {(() => {
-              // Build a single list of all rack definitions for this AZ
-              const allRacks = []
-
-              if (eksItems.length > 0) {
-                allRacks.push({ key: 'eks', label: 'EKS', color: categoryColors.eks.bright, darkColor: categoryColors.eks.dark, category: 'eks', items: eksItems })
-              }
-              if (mskItems.length > 0) {
-                allRacks.push({ key: 'msk', label: 'MSK', color: categoryColors.msk.bright, darkColor: categoryColors.msk.dark, category: 'msk', items: mskItems })
-              }
-              if (azRds.length > 0) {
-                allRacks.push({ key: 'rds', label: 'RDS', color: categoryColors.rds.bright, darkColor: categoryColors.rds.dark, category: 'rds', items: azRds.map(r => ({ id: r.id, name: `${r.name}${r.engine ? ` (${r.engine})` : ''}`, status: r.isStandby ? 'unknown' : r.status, isStandby: r.isStandby, multiAz: r.multiAz, endpoint: r.endpoint })) })
-              }
-              if (az.id === activeAzs[0]?.id && efsList.length > 0) {
-                allRacks.push({ key: 'efs', label: 'EFS', color: categoryColors.efs.bright, darkColor: categoryColors.efs.dark, category: 'efs', items: efsList.map(fs => ({ id: fs.id, name: fs.name, status: fs.status })) })
-              }
-              if (az.id === activeAzs[0]?.id && opensearchList.length > 0) {
-                allRacks.push({ key: 'opensearch', label: 'OpenSearch', color: categoryColors.opensearch.bright, darkColor: categoryColors.opensearch.dark, category: 'opensearch', items: opensearchList.map(d => ({ id: d.id, name: `${d.name} (${d.version || ''})`, status: d.status })) })
-              }
-              if (az.id === activeAzs[0]?.id && elbs.length > 0) {
-                allRacks.push({ key: 'elb', label: 'ELB', color: categoryColors.network.bright, darkColor: categoryColors.network.dark, category: 'elb', items: elbs.map(lb => { const t = lb.type === 'application' ? 'ALB' : lb.type === 'network' ? 'NLB' : 'CLB'; return { id: lb.id, name: `${lb.name} (${t})`, status: lb.status, arn: lb.id, dnsName: lb.dnsName } }) })
-              }
-
-              // EC2 racks by role or subnet
-              const groups = viewMode === 'subnet' ? subnetKeys : roles
-              const getItems = (key) => viewMode === 'subnet' ? serversBySubnet[key] : serversByRole[key]
-              const getLabel = (key) => {
-                if (viewMode === 'subnet') {
-                  const sub = subnets[key]
-                  return sub ? (sub.name !== key ? sub.name : sub.cidr) : key?.slice(0, 12) || 'unknown'
-                }
-                return key
-              }
-              const subnetColor = (key, idx) => {
-                if (viewMode !== 'subnet') return categoryColors.ec2.bright
-                const hue = (idx * 137.5) % 360
-                return `hsl(${hue}, 50%, 55%)`
-              }
-              const subnetDark = (key, idx) => {
-                if (viewMode !== 'subnet') return categoryColors.ec2.dark
-                const hue = (idx * 137.5) % 360
-                return `hsl(${hue}, 30%, 15%)`
-              }
-
-              for (const key of groups) {
-                const items = getItems(key)
-                if (!items?.length) continue
-                allRacks.push({ key, label: getLabel(key), color: subnetColor(key, allRacks.length), darkColor: subnetDark(key, allRacks.length), category: 'ec2', items: items.map(s => ({ id: s.id, name: s.name, status: s.status, ip: s.ip, type: s.type, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes, subnet: subnets[s.subnetId]?.cidr || s.subnetId, subnetId: s.subnetId, vpcId: s.vpcId, securityGroups: s.securityGroups })) })
-              }
-
-              // Layout all racks through the same engine
-              const layout = layoutRacks(allRacks.map(r => r.key), (key) => allRacks.find(r => r.key === key)?.items)
-              const offsetX = -CAGE_WIDTH / 2 + 4
-              const offsetZ = -CAGE_DEPTH / 2 + 4
-
-              return layout.positions.map((lp, i) => {
-                const rack = allRacks.find(r => r.key === lp.key)
-                if (!rack) return null
-                const pos = [offsetX + lp.x, 0, offsetZ + lp.z]
-                return (
-                  <Rack
-                    key={rack.key}
-                    position={pos}
-                    label={rack.label}
-                    color={rack.color}
-                    darkColor={rack.darkColor}
-                    category={rack.category}
-                    items={rack.items}
-                    onSelect={handleSelect}
-                    onClick={handleClick}
-                    pinnedId={pinned?.id}
-                    highlightIds={interconnectNodes}
-                    highlightColors={highlightColors}
-                  />
                 )
               })
             })()}
@@ -546,52 +733,78 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
           pinnedId={pinned?.id}
           highlightIds={interconnectNodes}
           highlightColors={highlightColors}
+          viewMode={eksViewMode}
         />
       )}
 
       {/* On-demand interconnect lines when a multi-AZ node is pinned */}
       {pinned && interconnectNodes.length > 1 && (() => {
+        // Use the first region's layout for interconnects (backward compat)
+        const firstRegionKey = regionKeys[0]
+        const layout = regionLayouts[firstRegionKey]
+        if (!layout) return null
+        const { activeAzs: icAzs, cageSizes: icCageSizes, azPositions: icAzPositions, rdsByAz: icRdsByAz, rdsWithStandbys: icRdsWithStandbys } = layout
+        const regionX = regionPositions[firstRegionKey]?.x || 0
+        const regionZ = regionPositions[firstRegionKey]?.z || 0
+
         // Build position map for interconnect endpoints
         const positions = {}
-        activeAzs.forEach(az => {
-          const cw = cageSizes[az.id]?.width || MIN_CAGE_WIDTH
-          const cd = cageSizes[az.id]?.depth || MIN_CAGE_DEPTH
-          positions[`eks-${az.id}`] = [azPositions[az.id] - cw / 2 + 4, 4, -cd / 2 + 4]
-          positions[`msk-${az.id}`] = [azPositions[az.id] - cw / 2 + 4, 4, -cd / 2 + 8]
+        icAzs.forEach(az => {
+          const cw = icCageSizes[az.id]?.width || MIN_CAGE_WIDTH
+          const cd = icCageSizes[az.id]?.depth || MIN_CAGE_DEPTH
+          positions[`eks-${az.id}`] = [regionX + icAzPositions[az.id] - cw / 2 + 4, 4, regionZ + -cd / 2 + 4]
+          positions[`msk-${az.id}`] = [regionX + icAzPositions[az.id] - cw / 2 + 4, 4, regionZ + -cd / 2 + 8]
         })
-        rdsWithStandbys.forEach(r => {
-          const azX = azPositions[r.az]
-          const cw = cageSizes[r.az]?.width || MIN_CAGE_WIDTH
-          const cd = cageSizes[r.az]?.depth || MIN_CAGE_DEPTH
-          positions[r.id] = [azX - cw / 2 + 4, 4, -cd / 2 + 12]
+        icRdsWithStandbys.forEach(r => {
+          const azX = icAzPositions[r.az]
+          if (azX === undefined) return
+          const cw = icCageSizes[r.az]?.width || MIN_CAGE_WIDTH
+          const cd = icCageSizes[r.az]?.depth || MIN_CAGE_DEPTH
+          positions[r.id] = [regionX + azX - cw / 2 + 4, 4, regionZ + -cd / 2 + 12]
         })
         ec2.filter(s => (s.role || guessRole(s.name)) === 'eks-node').forEach(s => {
-          const azX = azPositions[s.az]
-          const cw = cageSizes[s.az]?.width || MIN_CAGE_WIDTH
-          const cd = cageSizes[s.az]?.depth || MIN_CAGE_DEPTH
-          positions[s.id] = [azX - cw / 2 + 4, 4, -cd / 2 + 4]
+          const azX = icAzPositions[s.az]
+          if (azX === undefined) return
+          const cw = icCageSizes[s.az]?.width || MIN_CAGE_WIDTH
+          const cd = icCageSizes[s.az]?.depth || MIN_CAGE_DEPTH
+          positions[s.id] = [regionX + azX - cw / 2 + 4, 4, -cd / 2 + 4]
         })
         elbs.forEach(lb => {
-          positions[lb.id] = [azPositions[activeAzs[0]?.id] || 0, 4, 0]
+          positions[lb.id] = [regionX + (icAzPositions[icAzs[0]?.id] || 0), 4, regionZ]
         })
         ec2.forEach(s => {
           if (!positions[s.id]) {
-            const azX = azPositions[s.az] || azPositions[activeAzs[0]?.id] || 0
-            positions[s.id] = [azX, 4, 0]
+            const azX = icAzPositions[s.az] || icAzPositions[icAzs[0]?.id] || 0
+            positions[s.id] = [regionX + azX, 4, 0]
           }
         })
 
+        // Aurora Global — add positions for clusters across all regions
+        for (const rKey of regionKeys) {
+          const rPos = regionPositions[rKey] || { x: 0, z: 0 }
+          const rLayout = regionLayouts[rKey]
+          const rAurora = regionData[rKey]?.aurora || []
+          if (!rLayout || rAurora.length === 0) continue
+          const firstAz = rLayout.activeAzs[0]
+          if (!firstAz) continue
+          const azX = rLayout.azPositions[firstAz.id] || 0
+          const cw = rLayout.cageSizes[firstAz.id]?.width || MIN_CAGE_WIDTH
+          rAurora.forEach(c => {
+            if (!positions[c.id]) {
+              positions[c.id] = [rPos.x + azX - cw / 2 + 4, 4, rPos.z]
+            }
+          })
+        }
+
         // For ELBs with port groups, show floating labels above the actual ELB rack
         if (pinned.arn && elbPortGroups.length > 0) {
-          const portColors = ['#00ff88', '#ff6644', '#44aaff', '#ffcc00', '#cc44ff', '#44ffcc', '#ff44aa', '#88ff44']
-          // Compute ELB rack position from the first AZ layout
-          const firstAzId = activeAzs[0]?.id
-          const azAServers = serversByAz[firstAzId] || []
+          const firstAzId = icAzs[0]?.id
+          const azAServers = (regionData[firstRegionKey]?.ec2 || []).filter(s => s.az === firstAzId) || []
           const nonEksA = azAServers.filter(s => s.role !== 'eks-node')
           const groupsA = viewMode === 'subnet' ? Object.keys(groupBy(nonEksA, 'subnetId')) : Object.keys(groupBy(nonEksA, 'role'))
           const getItemsA = (key) => {
             if (key === '__eks' || key === '__msk') return [{ id: 'x' }]
-            if (key === '__rds') return rdsByAz[firstAzId] || []
+            if (key === '__rds') return icRdsByAz[firstAzId] || []
             if (key === '__efs') return efsList
             if (key === '__opensearch') return opensearchList
             if (key === '__elb') return elbs
@@ -600,22 +813,21 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
           const allKeysA = []
           if (eks.azs.includes(firstAzId)) allKeysA.push('__eks')
           if (msk.azs.includes(firstAzId)) allKeysA.push('__msk')
-          if ((rdsByAz[firstAzId] || []).length > 0) allKeysA.push('__rds')
+          if ((icRdsByAz[firstAzId] || []).length > 0) allKeysA.push('__rds')
           if (efsList.length > 0) allKeysA.push('__efs')
           if (opensearchList.length > 0) allKeysA.push('__opensearch')
           if (elbs.length > 0) allKeysA.push('__elb')
           allKeysA.push(...groupsA)
           const layoutA = layoutRacks(allKeysA, getItemsA)
           const elbLayout = layoutA.positions.find(p => p.key === '__elb')
-          const cwA = cageSizes[firstAzId]?.width || MIN_CAGE_WIDTH
-          const cdA = cageSizes[firstAzId]?.depth || MIN_CAGE_DEPTH
-          const elbX = azPositions[firstAzId] + (-cwA / 2 + 4) + (elbLayout?.x || 0)
+          const cwA = icCageSizes[firstAzId]?.width || MIN_CAGE_WIDTH
+          const cdA = icCageSizes[firstAzId]?.depth || MIN_CAGE_DEPTH
+          const elbX = regionX + icAzPositions[firstAzId] + (-cwA / 2 + 4) + (elbLayout?.x || 0)
           const elbZ = (-cdA / 2 + 4) + (elbLayout?.z || 0)
-          const labelStartY = 9 // just above tallest rack
+          const labelStartY = 9
 
           return (
             <group>
-              {/* Floating port labels above ELB rack */}
               {elbPortGroups.filter(pg => pg.targets.length > 0).map((pg, i) => (
                 <Text
                   key={i}
@@ -633,10 +845,11 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
           )
         }
 
-        // Non-ELB interconnects (EKS, MSK, RDS)
+        // Non-ELB interconnects (EKS, MSK, RDS, Aurora)
         let color = categoryColors.eks.bright
         if (pinned.id.startsWith('msk')) color = categoryColors.msk.bright
         else if (rds.find(r => r.id === pinned.id)) color = categoryColors.rds.bright
+        else if (pinned.globalClusterId) color = categoryColors.aurora.bright
 
         return (
           <Interconnect
@@ -645,6 +858,75 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
             color={color}
           />
         )
+      })()}
+
+      {/* VPC Peering connections */}
+      {vpcPeerings.length > 0 && isMultiRegion && (() => {
+        // Build a VPC position map with exact world coordinates of VPC floor zones
+        const vpcPositions = {}
+        const vpcColors = {}
+        for (const regionKey of regionKeys) {
+          const rd = regionData[regionKey]
+          const layout = regionLayouts[regionKey]
+          if (!rd || !layout) continue
+          const rPos = regionPositions[regionKey] || { x: 0, z: 0 }
+          // VPCs span the whole region — compute center of the spanning zone
+          const allVpcIds = [...new Set((rd.ec2 || []).map(s => s.vpcId).filter(Boolean))]
+          if (allVpcIds.length === 0) continue
+          const azXs = layout.activeAzs.map(az => layout.azPositions[az.id])
+          const leftAz = layout.activeAzs.reduce((a, b) => layout.azPositions[a.id] < layout.azPositions[b.id] ? a : b)
+          const rightAz = layout.activeAzs.reduce((a, b) => layout.azPositions[a.id] > layout.azPositions[b.id] ? a : b)
+          const leftEdge = layout.azPositions[leftAz.id] - (layout.cageSizes[leftAz.id]?.width || MIN_CAGE_WIDTH) / 2
+          const rightEdge = layout.azPositions[rightAz.id] + (layout.cageSizes[rightAz.id]?.width || MIN_CAGE_WIDTH) / 2
+          const spanCenterX = (leftEdge + rightEdge) / 2
+
+          allVpcIds.forEach((vpcId, vi) => {
+            if (!vpcPositions[vpcId]) {
+              const hue = (vi * 220) % 360
+              vpcPositions[vpcId] = {
+                x: rPos.x + spanCenterX,
+                y: 0.5,
+                z: rPos.z,
+                region: regionKey
+              }
+              vpcColors[vpcId] = `hsl(${hue}, 70%, 50%)`
+            }
+          })
+        }
+        return vpcPeerings.filter(p => p.status === 'active').map(peering => {
+          const from = vpcPositions[peering.requesterVpcId]
+          const to = vpcPositions[peering.accepterVpcId]
+          if (!from || !to) return null
+          const lineColor = vpcColors[peering.requesterVpcId] || '#ff4444'
+          return (
+            <group key={peering.id}>
+              <line>
+                <bufferGeometry>
+                  <bufferAttribute
+                    attach="attributes-position"
+                    array={new Float32Array([
+                      from.x, from.y, from.z,
+                      to.x, to.y, to.z
+                    ])}
+                    count={2}
+                    itemSize={3}
+                  />
+                </bufferGeometry>
+                <lineBasicMaterial color={lineColor} />
+              </line>
+              <Text
+                position={[(from.x + to.x) / 2, 1.5, (from.z + to.z) / 2]}
+                fontSize={0.4}
+                color={lineColor}
+                anchorX="center"
+                outlineWidth={0.02}
+                outlineColor="#000000"
+              >
+                {peering.id}
+              </Text>
+            </group>
+          )
+        }).filter(Boolean)
       })()}
     </group>
   )

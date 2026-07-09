@@ -101,6 +101,7 @@ If the proxy isn't running, the app shows sample data in demo mode.
 | Ctrl+G | Show security group inbound rules |
 | Ctrl+N | Show NACL rules for subnet |
 | Ctrl+K | Kill (delete) pinned pod |
+| N | Toggle EKS node view (when mezzanine open) |
 
 ## Features
 
@@ -228,6 +229,79 @@ To see namespace/pod details when clicking an EKS cluster, your IAM role also ne
 - Kubernetes RBAC access to the cluster (list namespaces, list pods)
 - This is typically granted via `aws-auth` ConfigMap or EKS access entries
 - The proxy generates an EKS auth token using the same IAM role it uses for AWS APIs
+
+## Shared / Read-Only Server
+
+Deploy for team-wide read-only access:
+
+```bash
+npm run serve -- --host 0.0.0.0 --read-only --role-arn arn:aws:iam::123456789:role/ReadRole --region us-east-1
+```
+
+Flags:
+- `--host 0.0.0.0` — Bind to all interfaces (LAN-accessible)
+- `--read-only` — Disables mutating actions (reboot, stop, start, kill pod) at server level; hides action UI
+- `--role-arn` — Required for auto-refresh to work (proxy re-assumes before expiry)
+
+**Important:** Base credentials (env vars or profile) must be able to call `sts:AssumeRole` —
+they cannot already be the assumed role's session tokens. The UI refresh button only works
+when `--role-arn` is set with valid base credentials.
+
+## Docker / Kubernetes Deployment
+
+A `Dockerfile` is provided for containerized deployments. Builds frontend with configurable
+`BASE_PATH` and bundles nginx + node backend in a single image.
+
+```bash
+docker build --platform linux/amd64 --build-arg BASE_PATH=/aws3d/ -t your-registry/aws3d:latest .
+docker push your-registry/aws3d:latest
+```
+
+Kubernetes manifests in `deploy/`:
+- `k8s.yaml` — Deployment + Service (edit image, namespace, role ARN, registry secret)
+- `nginx.conf` — Internal nginx (serves static files + proxies /api to node backend on :9876)
+- `entrypoint.sh` — Starts both node proxy and nginx
+
+Container env vars:
+- `AWS_REGION` — Target region
+- `ROLE_ARN` — IAM role to assume (enables auto-refresh)
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — Base credentials that can assume the role
+
+To route through an existing reverse proxy, add:
+```nginx
+location /aws3d/ {
+    proxy_pass http://aws3d-service:8080/;
+}
+```
+
+## EKS Node View
+
+Press **N** (when mezzanine is open) to toggle between namespace view and node view:
+- **Namespace view** (default) — Racks grouped by namespace
+- **Node view** — Racks grouped by EC2 node, pods color-coded by namespace
+  - Resource utilization (CPU/Mem %) shown at top of each rack
+  - Color legend on the right maps namespaces to colors
+  - Falls back to pod resource requests if metrics-server is unavailable
+
+## Development Notes
+
+- Frontend uses React Three Fiber (R3F) + drei for 3D rendering
+- Proxy URL is auto-detected: uses `import.meta.env.BASE_URL` to determine if deployed
+  behind a subpath (same-origin API) or running locally (port 9876)
+- Pod health: `Running` + `ready === total` + `restarts < 5` = healthy; otherwise degraded
+- EKS mezzanine polls every 15 seconds for pod/node updates
+- Main infrastructure polls every 15 seconds
+- `window.__aws3dFastPoll` triggers 10 rapid polls at 3s intervals (used after EC2 actions)
+
+### Key Implementation Details
+
+| Concern | Implementation |
+|---------|---------------|
+| PROXY_URL detection | `import.meta.env.BASE_URL` — `/` means local dev (`:9876`), otherwise same-origin subpath |
+| EKS auth tokens | Presigned STS GetCallerIdentity URL, base64url encoded as `k8s-aws-v1.<token>` |
+| Read-only enforcement | Server returns 403 on mutating endpoints; frontend hides controls based on `/api/health` `readOnly` field |
+| Credential refresh | Only works with `--role-arn`; env-var-only mode cannot self-refresh |
+| Platform builds | Docker images must be `--platform linux/amd64` for typical k8s clusters |
 
 ## Global Install (optional)
 
