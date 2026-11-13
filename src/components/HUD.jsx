@@ -16,6 +16,15 @@ function formatUptime(launchTime) {
   return `${hours}h ${mins}m ago`
 }
 
+function formatBytes(bytes) {
+  if (bytes == null) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes < 1024 * 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  return `${(bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2)} TB`
+}
+
 const styles = {
   overlay: {
     position: 'fixed', bottom: 20, left: 20, right: 20,
@@ -243,6 +252,24 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {selected.ip && <div style={styles.row}><span style={styles.label}>IP:</span><span>{selected.ip}</span></div>}
           {selected.endpoint && <div style={styles.row}><span style={styles.label}>Endpoint:</span><span>{selected.endpoint}</span></div>}
           {selected.dnsName && <div style={styles.row}><span style={styles.label}>DNS:</span><span>{selected.dnsName}</span></div>}
+          {selected.serviceType === 'efs' && selected.sizeBytes != null && (
+            <div style={styles.row}><span style={styles.label}>Size:</span><span>{formatBytes(selected.sizeBytes)}</span></div>
+          )}
+          {selected.serviceType === 'efs' && selected.throughputMode && (
+            <div style={styles.row}><span style={styles.label}>Throughput:</span><span>{selected.throughputMode}{selected.provisionedThroughput ? ` (${selected.provisionedThroughput} MiB/s)` : ''}</span></div>
+          )}
+          {selected.serviceType === 'efs' && selected.performanceMode && (
+            <div style={styles.row}><span style={styles.label}>Performance:</span><span>{selected.performanceMode}</span></div>
+          )}
+          {selected.serviceType === 'efs' && selected.encrypted && (
+            <div style={styles.row}><span style={styles.label}>Encrypted:</span><span>Yes</span></div>
+          )}
+          {selected.serviceType === 'efs' && selected.accessPoints?.length > 0 && (
+            <div style={styles.row}><span style={styles.label}>Exports:</span><span>{selected.accessPoints.map(ap => ap.path).join(', ')}</span></div>
+          )}
+          {selected.serviceType === 'efs' && selected.mountTargets?.length > 0 && (
+            <div style={styles.row}><span style={styles.label}>Mounts:</span><span>{selected.mountTargets.map(mt => mt.ip).join(', ')}</span></div>
+          )}
           <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.status === 'down' ? 'stopped' : selected.status}</span></div>
           {selected.checks && <div style={styles.row}><span style={styles.label}>Checks:</span><span>{selected.checks}</span></div>}
           {selected.node && <div style={styles.row}><span style={styles.label}>Node:</span><span>{selected.node}</span></div>}

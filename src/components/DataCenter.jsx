@@ -605,7 +605,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
                       allRacks.push({ key: 'aurora', label: 'Aurora', color: categoryColors.aurora.bright, darkColor: categoryColors.aurora.dark, category: 'aurora', items: regAurora.map(c => ({ id: c.id, name: `${c.name} (${c.role})`, status: c.status, globalClusterId: c.globalClusterId, role: c.role, endpoint: c.endpoint, readerEndpoint: c.readerEndpoint })) })
                     }
                     if (az.id === regAzs[0]?.id && regEfs.length > 0) {
-                      allRacks.push({ key: 'efs', label: 'EFS', color: categoryColors.efs.bright, darkColor: categoryColors.efs.dark, category: 'efs', items: regEfs.map(fs => ({ id: fs.id, name: fs.name, status: fs.status })) })
+                      allRacks.push({ key: 'efs', label: 'EFS', color: categoryColors.efs.bright, darkColor: categoryColors.efs.dark, category: 'efs', items: regEfs.map(fs => ({ id: fs.id, name: fs.name, status: fs.status, sizeBytes: fs.sizeBytes, throughputMode: fs.throughputMode, provisionedThroughput: fs.provisionedThroughput, performanceMode: fs.performanceMode, encrypted: fs.encrypted, mountTargets: fs.mountTargets, accessPoints: fs.accessPoints, serviceType: 'efs' })) })
                     }
                     if (az.id === regAzs[0]?.id && regOpensearch.length > 0) {
                       allRacks.push({ key: 'opensearch', label: 'OpenSearch', color: categoryColors.opensearch.bright, darkColor: categoryColors.opensearch.dark, category: 'opensearch', items: regOpensearch.map(d => ({ id: d.id, name: `${d.name} (${d.version || ''})`, status: d.status })) })

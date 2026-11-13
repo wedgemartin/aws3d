@@ -4,7 +4,7 @@ import { EKSClient, ListClustersCommand, DescribeClusterCommand } from '@aws-sdk
 import { RDSClient, DescribeDBInstancesCommand, DescribeDBClustersCommand, DescribeGlobalClustersCommand } from '@aws-sdk/client-rds'
 import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
 import { ElasticLoadBalancingV2Client, DescribeLoadBalancersCommand, DescribeTargetGroupsCommand, DescribeTargetHealthCommand, DescribeListenersCommand, DescribeRulesCommand } from '@aws-sdk/client-elastic-load-balancing-v2'
-import { EFSClient, DescribeFileSystemsCommand } from '@aws-sdk/client-efs'
+import { EFSClient, DescribeFileSystemsCommand, DescribeMountTargetsCommand, DescribeAccessPointsCommand } from '@aws-sdk/client-efs'
 import { OpenSearchClient, ListDomainNamesCommand, DescribeDomainsCommand } from '@aws-sdk/client-opensearch'
 import { STSClient, GetCallerIdentityCommand, AssumeRoleCommand } from '@aws-sdk/client-sts'
 import { CloudTrailClient, LookupEventsCommand } from '@aws-sdk/client-cloudtrail'
@@ -220,12 +220,44 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
       status: lb.State?.Code === 'active' ? 'healthy' : 'degraded',
     }))
 
-    // Normalize EFS
-    const efsNormalized = (fileSystems.FileSystems || []).map(fs => ({
-      id: fs.FileSystemId,
-      name: fs.Name || fs.FileSystemId,
-      sizeBytes: fs.SizeInBytes?.Value,
-      status: fs.LifeCycleState === 'available' ? 'healthy' : 'degraded',
+    // Normalize EFS — fetch mount targets and access points for each filesystem
+    const efsNormalized = await Promise.all((fileSystems.FileSystems || []).map(async (fs) => {
+      let mountTargets = []
+      let accessPoints = []
+      try {
+        const mtRes = await efs.send(new DescribeMountTargetsCommand({ FileSystemId: fs.FileSystemId }))
+        mountTargets = (mtRes.MountTargets || []).map(mt => ({
+          id: mt.MountTargetId,
+          ip: mt.IpAddress,
+          subnetId: mt.SubnetId,
+          az: mt.AvailabilityZoneName,
+          state: mt.LifeCycleState,
+        }))
+      } catch (e) { console.warn(`DescribeMountTargets failed for ${fs.FileSystemId}:`, e.message) }
+      try {
+        const apRes = await efs.send(new DescribeAccessPointsCommand({ FileSystemId: fs.FileSystemId }))
+        accessPoints = (apRes.AccessPoints || []).map(ap => ({
+          id: ap.AccessPointId,
+          name: ap.Name || ap.AccessPointId,
+          path: ap.RootDirectory?.Path || '/',
+        }))
+      } catch (e) { console.warn(`DescribeAccessPoints failed for ${fs.FileSystemId}:`, e.message) }
+
+      return {
+        id: fs.FileSystemId,
+        name: fs.Name || fs.FileSystemId,
+        sizeBytes: fs.SizeInBytes?.Value,
+        sizeLimitBytes: fs.SizeInBytes?.ValueInStandard != null
+          ? (fs.SizeInBytes.ValueInIA || 0) + (fs.SizeInBytes.ValueInStandard || 0)
+          : null,
+        throughputMode: fs.ThroughputMode,
+        provisionedThroughput: fs.ProvisionedThroughputInMibps || null,
+        performanceMode: fs.PerformanceMode,
+        encrypted: fs.Encrypted || false,
+        mountTargets,
+        accessPoints,
+        status: fs.LifeCycleState === 'available' ? 'healthy' : 'degraded',
+      }
     }))
 
     // Fetch subnet details for all unique subnet IDs
