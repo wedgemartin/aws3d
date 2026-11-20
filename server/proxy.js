@@ -182,7 +182,7 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
         rootDevice: i.RootDeviceType,
         status: i.State?.Name === 'running'
           ? (checks?.system === 'ok' && checks?.instance === 'ok' ? 'healthy' : 'degraded')
-          : i.State?.Name === 'stopped' ? 'down' : 'degraded',
+          : ['stopped', 'terminated', 'shutting-down'].includes(i.State?.Name) ? 'down' : 'degraded',
       }
     })
 

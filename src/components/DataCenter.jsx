@@ -638,7 +638,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
                     for (const key of groups) {
                       const items = getItems(key)
                       if (!items?.length) continue
-                      allRacks.push({ key, label: getLabel(key), color: subnetColor(key, allRacks.length), darkColor: subnetDark(key, allRacks.length), category: 'ec2', items: items.map(s => ({ id: s.id, name: s.name, status: s.status, ip: s.ip, type: s.type, amiId: s.amiId, amiName: s.amiName, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes, subnet: regSubnets[s.subnetId]?.cidr || s.subnetId, subnetId: s.subnetId, vpcId: s.vpcId, securityGroups: s.securityGroups })) })
+                      allRacks.push({ key, label: getLabel(key), color: subnetColor(key, allRacks.length), darkColor: subnetDark(key, allRacks.length), category: 'ec2', items: items.map(s => ({ id: s.id, name: s.name, status: s.status, state: s.state, ip: s.ip, type: s.type, amiId: s.amiId, amiName: s.amiName, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes, subnet: regSubnets[s.subnetId]?.cidr || s.subnetId, subnetId: s.subnetId, vpcId: s.vpcId, securityGroups: s.securityGroups })) })
                     }
 
                     // Layout all racks through the same engine

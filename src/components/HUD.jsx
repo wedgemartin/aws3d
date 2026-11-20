@@ -101,6 +101,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
 
       // EC2 actions (ID starts with i-)
       if (!pinned.id?.startsWith('i-')) return
+      if (pinned.state === 'terminated' || pinned.state === 'shutting-down') return
       if (e.key === 'r') setConfirmAction({ action: 'reboot', instanceId: pinned.id, name: pinned.name })
       if (e.key === 's') {
         const action = pinned.status === 'down' ? 'start' : 'stop'
@@ -271,7 +272,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {selected.serviceType === 'efs' && selected.mountTargets?.length > 0 && (
             <div style={styles.row}><span style={styles.label}>Mounts:</span><span>{selected.mountTargets.map(mt => mt.ip).join(', ')}</span></div>
           )}
-          <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.status === 'down' ? 'stopped' : selected.status}</span></div>
+          <div style={styles.row}><span style={styles.label}>Status:</span><span>{selected.state === 'terminated' || selected.state === 'shutting-down' ? selected.state : selected.status === 'down' ? 'stopped' : selected.status}</span></div>
           {selected.checks && <div style={styles.row}><span style={styles.label}>Checks:</span><span>{selected.checks}</span></div>}
           {selected.node && <div style={styles.row}><span style={styles.label}>Node:</span><span>{selected.node}</span></div>}
           {selected.namespace && <div style={styles.row}><span style={styles.label}>Namespace:</span><span>{selected.namespace}</span></div>}
@@ -284,7 +285,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
           {selected.volumes?.length > 0 && <div style={styles.row}><span style={styles.label}>Volumes:</span><span>{selected.volumes.map(v => `${v.device} ${v.size || '?'}GB ${v.type || ''}`).join(' · ')}</span></div>}
           {selected.id && <div style={styles.row}><span style={styles.label}>ID:</span><span>{selected.id}</span></div>}
           {selected.cluster && !selected.namespace && <div style={{ marginTop: 4, fontSize: 11, color: '#ffaa44' }}>Click to expand cluster view</div>}
-          {isEc2 && connected && (
+          {isEc2 && connected && selected.state !== 'terminated' && selected.state !== 'shutting-down' && (
             <div style={styles.actions}>
               Ctrl+R Reboot · {selected.status === 'down' ? 'Ctrl+S Start' : 'Ctrl+S Stop'} · Ctrl+G SG · Ctrl+N NACL
             </div>
