@@ -249,6 +249,7 @@ export default function HUD({ selected, onClose, locked, pinned, viewMode, dataL
         <div style={styles.panel}>
           <div style={styles.title}>{selected.name}</div>
           {selected.type && <div style={styles.row}><span style={styles.label}>Type:</span><span>{selected.type}</span></div>}
+          {selected.amiId && <div style={styles.row}><span style={styles.label}>AMI:</span><span>{selected.amiName ? `${selected.amiName} (${selected.amiId})` : selected.amiId}</span></div>}
           {selected.ip && <div style={styles.row}><span style={styles.label}>IP:</span><span>{selected.ip}</span></div>}
           {selected.endpoint && <div style={styles.row}><span style={styles.label}>Endpoint:</span><span>{selected.endpoint}</span></div>}
           {selected.dnsName && <div style={styles.row}><span style={styles.label}>DNS:</span><span>{selected.dnsName}</span></div>}

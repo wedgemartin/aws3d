@@ -28,7 +28,7 @@ export default function Rack({ position, label, color, darkColor, category, item
             {/* Rack frame */}
             <mesh position={[0, rackHeight / 2, 0]} castShadow>
               <boxGeometry args={[rackWidth, rackHeight, rackDepth]} />
-              <meshStandardMaterial color="#1e1e2e" metalness={0.6} roughness={0.4} />
+              <meshStandardMaterial color="#26263a" metalness={0.25} roughness={0.4} />
             </mesh>
             {/* Rack edge outline */}
             <lineSegments position={[0, rackHeight / 2, 0]}>

@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeVolumesCommand, DescribeSubnetsCommand, DescribeSecurityGroupsCommand, DescribeNetworkAclsCommand, RebootInstancesCommand, StopInstancesCommand, StartInstancesCommand, DescribeVpcPeeringConnectionsCommand } from '@aws-sdk/client-ec2'
+import { EC2Client, DescribeInstancesCommand, DescribeInstanceStatusCommand, DescribeVolumesCommand, DescribeImagesCommand, DescribeSubnetsCommand, DescribeSecurityGroupsCommand, DescribeNetworkAclsCommand, RebootInstancesCommand, StopInstancesCommand, StartInstancesCommand, DescribeVpcPeeringConnectionsCommand } from '@aws-sdk/client-ec2'
 import { EKSClient, ListClustersCommand, DescribeClusterCommand } from '@aws-sdk/client-eks'
 import { RDSClient, DescribeDBInstancesCommand, DescribeDBClustersCommand, DescribeGlobalClustersCommand } from '@aws-sdk/client-rds'
 import { KafkaClient, ListClustersV2Command } from '@aws-sdk/client-kafka'
@@ -138,6 +138,19 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
       } catch (e) { console.warn('DescribeVolumes failed:', e.message) }
     }
 
+    // Look up AMI Name tags (best effort; AMIs may be deregistered or private)
+    const amiIds = [...new Set((instances.Reservations || []).flatMap(r => r.Instances).map(i => i.ImageId).filter(Boolean))]
+    const amiNameMap = {}
+    if (amiIds.length > 0) {
+      try {
+        const imgRes = await ec2.send(new DescribeImagesCommand({ ImageIds: amiIds }))
+        for (const img of (imgRes.Images || [])) {
+          const n = (img.Tags || []).find(t => t.Key === 'Name')?.Value
+          if (n) amiNameMap[img.ImageId] = n
+        }
+      } catch (e) { console.warn('DescribeImages failed:', e.message) }
+    }
+
     // Normalize EC2
     const ec2Instances = (instances.Reservations || []).flatMap(r => r.Instances).map(i => {
       const checks = statusMap[i.InstanceId]
@@ -151,6 +164,8 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
         name: (i.Tags || []).find(t => t.Key === 'Name')?.Value || i.InstanceId,
         state: i.State?.Name,
         type: i.InstanceType,
+        amiId: i.ImageId,
+        amiName: amiNameMap[i.ImageId] || null,
         az: i.Placement?.AvailabilityZone,
         ip: i.PrivateIpAddress,
         subnetId: i.SubnetId,

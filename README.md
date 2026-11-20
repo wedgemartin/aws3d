@@ -203,6 +203,7 @@ The proxy calls these APIs (read-only):
 - `ec2:DescribeInstances`
 - `ec2:DescribeInstanceStatus`
 - `ec2:DescribeVolumes`
+- `ec2:DescribeImages` (optional, for AMI names)
 - `ec2:DescribeSubnets`
 - `ec2:DescribeSecurityGroups`
 - `ec2:DescribeNetworkAcls`
