@@ -107,10 +107,29 @@ function processRegionData(data) {
   return { ec2, rds, eks, msk, elbs, efs, opensearch, aurora, subnets }
 }
 
+// Split an AZ's non-EKS servers into racks. Racks never mix VPCs, so each rack
+// belongs to exactly one VPC floor zone. Within a VPC, group by role or subnet.
+function buildEc2Groups(servers, vpcIds, viewMode) {
+  const field = viewMode === 'subnet' ? 'subnetId' : 'role'
+  const groups = []
+  const vpcOrder = [...vpcIds, null]
+  for (const vpcId of vpcOrder) {
+    const inVpc = servers.filter(s => (s.vpcId || null) === vpcId)
+    const byGroup = groupBy(inVpc, field)
+    for (const gk of Object.keys(byGroup)) {
+      groups.push({ key: `${vpcId || ''}|${gk}`, groupKey: gk, vpcId, items: byGroup[gk] })
+    }
+  }
+  return groups
+}
+
+const ROW_PITCH = ROW_GAP + 3
+
 // Compute per-region layout data (AZs, cages, positions)
 function computeRegionLayout(regionProcessed, viewMode) {
-  const { ec2, rds, eks, msk, elbs, efs, opensearch, subnets } = regionProcessed
+  const { ec2, rds, eks, msk, elbs, efs, opensearch, aurora, subnets } = regionProcessed
   const serversByAz = groupBy(ec2, 'az')
+  const vpcIds = [...new Set(ec2.map(s => s.vpcId).filter(Boolean))]
 
   // Derive AZ list dynamically from all data sources
   const activeAzs = (() => {
@@ -134,48 +153,73 @@ function computeRegionLayout(regionProcessed, viewMode) {
   })
   const rdsByAz = groupBy(rdsWithStandbys, 'az')
 
-  // Compute dynamic cage size per AZ based on rack layout
-  const cageSizes = {}
+  // Describe every rack in every AZ: { key, vpcId (null = shared band), count }
+  const racksByAz = {}
   for (const az of activeAzs) {
     const azServers = serversByAz[az.id] || []
     const nonEks = azServers.filter(s => s.role !== 'eks-node')
-    const groups = viewMode === 'subnet'
-      ? Object.keys(groupBy(nonEks, 'subnetId'))
-      : Object.keys(groupBy(nonEks, 'role'))
-    const getItems = (key) => viewMode === 'subnet'
-      ? groupBy(nonEks, 'subnetId')[key]
-      : groupBy(nonEks, 'role')[key]
-
-    let totalRackCount = groups.length
-    if (eks.azs.includes(az.id)) totalRackCount++
-    if (msk.azs.includes(az.id)) totalRackCount++
-    if ((rdsByAz[az.id] || []).length > 0) totalRackCount++
-    if (az.id === activeAzs[0]?.id && elbs.length > 0) totalRackCount++
-    if (az.id === activeAzs[0]?.id && efs.length > 0) totalRackCount++
-    if (az.id === activeAzs[0]?.id && opensearch.length > 0) totalRackCount++
-
-    const allKeys = []
-    if (eks.azs.includes(az.id)) allKeys.push('__eks')
-    if (msk.azs.includes(az.id)) allKeys.push('__msk')
-    if ((rdsByAz[az.id] || []).length > 0) allKeys.push('__rds')
-    if (az.id === activeAzs[0]?.id && efs.length > 0) allKeys.push('__efs')
-    if (az.id === activeAzs[0]?.id && opensearch.length > 0) allKeys.push('__opensearch')
-    if (az.id === activeAzs[0]?.id && elbs.length > 0) allKeys.push('__elb')
-    allKeys.push(...groups)
-
-    const getAllItems = (key) => {
-      if (key === '__eks') return [{ id: 'x' }]
-      if (key === '__msk') return [{ id: 'x' }]
-      if (key === '__rds') return rdsByAz[az.id]
-      if (key === '__efs') return efs
-      if (key === '__opensearch') return opensearch
-      if (key === '__elb') return elbs
-      return getItems(key)
-    }
-
-    const layout = layoutRacks(allKeys, getAllItems)
-    cageSizes[az.id] = { width: Math.max(MIN_CAGE_WIDTH, layout.totalWidth + 10), depth: Math.max(MIN_CAGE_DEPTH, layout.totalDepth + 10) }
+    const eksNodes = azServers.filter(s => s.role === 'eks-node')
+    const first = az.id === activeAzs[0]?.id
+    const racks = []
+    if (eks.azs.includes(az.id)) racks.push({ key: 'eks', vpcId: eksNodes[0]?.vpcId || null, count: eksNodes.length || 1 })
+    if (msk.azs.includes(az.id)) racks.push({ key: 'msk', vpcId: null, count: 1 })
+    if ((rdsByAz[az.id] || []).length > 0) racks.push({ key: 'rds', vpcId: null, count: rdsByAz[az.id].length })
+    if (first && aurora.length > 0) racks.push({ key: 'aurora', vpcId: null, count: aurora.length })
+    if (first && efs.length > 0) racks.push({ key: 'efs', vpcId: null, count: efs.length })
+    if (first && opensearch.length > 0) racks.push({ key: 'opensearch', vpcId: null, count: opensearch.length })
+    if (first && elbs.length > 0) racks.push({ key: 'elb', vpcId: null, count: elbs.length })
+    for (const g of buildEc2Groups(nonEks, vpcIds, viewMode)) racks.push({ key: g.key, vpcId: g.vpcId, count: g.items.length })
+    racksByAz[az.id] = racks
   }
+
+  // Bands run along Z: a shared band (non-VPC services) first, then one band per VPC.
+  // A band's height is the tallest it needs in any AZ so VPC floor zones line up across AZs.
+  const bandOrder = [null, ...vpcIds]
+  const layoutBand = (azId, bandId) => {
+    const racks = racksByAz[azId].filter(r => r.vpcId === bandId)
+    return layoutRacks(racks.map(r => r.key), (key) => ({ length: racks.find(r => r.key === key).count }))
+  }
+  const bandRows = {}
+  const azWidths = {}
+  for (const az of activeAzs) {
+    azWidths[az.id] = 0
+    for (const bandId of bandOrder) {
+      const bl = layoutBand(az.id, bandId)
+      const rows = bl.positions.length === 0 ? 0 : Math.max(...bl.positions.map(p => p.z / ROW_PITCH)) + 1
+      bandRows[bandId] = Math.max(bandRows[bandId] || 0, rows)
+      if (bl.positions.length > 0) azWidths[az.id] = Math.max(azWidths[az.id], bl.totalWidth)
+    }
+  }
+  const bandStartZ = {}
+  let zCursor = 0
+  for (const bandId of bandOrder) {
+    bandStartZ[bandId] = zCursor
+    zCursor += bandRows[bandId] * ROW_PITCH
+  }
+  const totalDepth = zCursor + 4
+  const cageDepth = Math.max(MIN_CAGE_DEPTH, totalDepth + 10)
+
+  const rackPositions = {}
+  const cageSizes = {}
+  for (const az of activeAzs) {
+    rackPositions[az.id] = {}
+    for (const bandId of bandOrder) {
+      for (const p of layoutBand(az.id, bandId).positions) {
+        rackPositions[az.id][p.key] = { x: p.x, z: p.z + bandStartZ[bandId] }
+      }
+    }
+    cageSizes[az.id] = { width: Math.max(MIN_CAGE_WIDTH, azWidths[az.id] + 10), depth: cageDepth }
+  }
+
+  // VPC floor zones in cage-local Z (cage centered at 0). Racks start at -cageDepth/2 + 4.
+  const vpcZones = vpcIds
+    .filter(v => bandRows[v] > 0)
+    .map(vpcId => ({
+      vpcId,
+      index: vpcIds.indexOf(vpcId),
+      depth: bandRows[vpcId] * ROW_PITCH,
+      centerZ: -cageDepth / 2 + bandStartZ[vpcId] + (bandRows[vpcId] * ROW_PITCH) / 2,
+    }))
 
   // Position AZs side by side dynamically
   const azPositions = {}
@@ -192,7 +236,7 @@ function computeRegionLayout(regionProcessed, viewMode) {
     azPositions[azId] -= offset
   }
 
-  return { activeAzs, serversByAz, rdsByAz, rdsWithStandbys, cageSizes, azPositions, totalSpan }
+  return { activeAzs, serversByAz, rdsByAz, rdsWithStandbys, cageSizes, azPositions, totalSpan, rackPositions, vpcZones, vpcIds }
 }
 
 export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetching }) {
@@ -562,12 +606,8 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
               const CAGE_DEPTH = regCageSizes[az.id]?.depth || MIN_CAGE_DEPTH
               const azServers = regServersByAz[az.id] || []
               const azRds = regRdsByAz[az.id] || []
-              const serversByRole = groupBy(azServers.filter(s => s.role !== 'eks-node'), 'role')
-              const roles = Object.keys(serversByRole)
-
               const nonEksServers = azServers.filter(s => s.role !== 'eks-node')
-              const serversBySubnet = groupBy(nonEksServers, 'subnetId')
-              const subnetKeys = Object.keys(serversBySubnet)
+              const ec2Groups = buildEc2Groups(nonEksServers, layout.vpcIds, viewMode)
 
               const eksNodes = azServers.filter(s => s.role === 'eks-node')
               const eksItems = regEks.azs.includes(az.id)
@@ -615,8 +655,6 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
                     }
 
                     // EC2 racks by role or subnet
-                    const groups = viewMode === 'subnet' ? subnetKeys : roles
-                    const getItems = (key) => viewMode === 'subnet' ? serversBySubnet[key] : serversByRole[key]
                     const getLabel = (key) => {
                       if (viewMode === 'subnet') {
                         const sub = regSubnets[key]
@@ -635,20 +673,18 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
                       return `hsl(${hue}, 30%, 15%)`
                     }
 
-                    for (const key of groups) {
-                      const items = getItems(key)
-                      if (!items?.length) continue
-                      allRacks.push({ key, label: getLabel(key), color: subnetColor(key, allRacks.length), darkColor: subnetDark(key, allRacks.length), category: 'ec2', items: items.map(s => ({ id: s.id, name: s.name, status: s.status, state: s.state, ip: s.ip, type: s.type, amiId: s.amiId, amiName: s.amiName, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes, subnet: regSubnets[s.subnetId]?.cidr || s.subnetId, subnetId: s.subnetId, vpcId: s.vpcId, securityGroups: s.securityGroups })) })
+                    for (const { key, groupKey, items } of ec2Groups) {
+                      allRacks.push({ key, label: getLabel(groupKey), color: subnetColor(key, allRacks.length), darkColor: subnetDark(key, allRacks.length), category: 'ec2', items: items.map(s => ({ id: s.id, name: s.name, status: s.status, state: s.state, ip: s.ip, type: s.type, amiId: s.amiId, amiName: s.amiName, launchTime: s.launchTime, checks: s.checks, volumes: s.volumes, subnet: regSubnets[s.subnetId]?.cidr || s.subnetId, subnetId: s.subnetId, vpcId: s.vpcId, securityGroups: s.securityGroups })) })
                     }
 
-                    // Layout all racks through the same engine
-                    const rackLayout = layoutRacks(allRacks.map(r => r.key), (key) => allRacks.find(r => r.key === key)?.items)
+                    // Rack positions come from the region layout so each rack sits over its VPC's floor zone
+                    const azRackPositions = layout.rackPositions[az.id] || {}
                     const offsetX = -CAGE_WIDTH / 2 + 4
                     const offsetZ = -CAGE_DEPTH / 2 + 4
 
-                    return rackLayout.positions.map((lp, i) => {
-                      const rack = allRacks.find(r => r.key === lp.key)
-                      if (!rack) return null
+                    return allRacks.map((rack) => {
+                      const lp = azRackPositions[rack.key]
+                      if (!lp) return null
                       const pos = [offsetX + lp.x, 0, offsetZ + lp.z]
                       return (
                         <Rack
@@ -674,8 +710,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
 
             {/* VPC floor zones — span across all AZs in the region */}
             {(() => {
-              const allVpcIds = [...new Set(regEc2.map(s => s.vpcId).filter(Boolean))]
-              if (allVpcIds.length === 0) return null
+              if (layout.vpcZones.length === 0) return null
               // Compute the span: from leftmost AZ edge to rightmost AZ edge
               const azXs = regAzs.map(az => regAzPositions[az.id])
               const leftAz = regAzs.reduce((a, b) => regAzPositions[a.id] < regAzPositions[b.id] ? a : b)
@@ -684,13 +719,9 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
               const rightEdge = regAzPositions[rightAz.id] + (regCageSizes[rightAz.id]?.width || MIN_CAGE_WIDTH) / 2
               const spanWidth = rightEdge - leftEdge
               const spanCenterX = (leftEdge + rightEdge) / 2
-              const maxDepth = Math.max(...regAzs.map(az => regCageSizes[az.id]?.depth || MIN_CAGE_DEPTH))
-              const vpcCount = allVpcIds.length
-              const zoneDepth = (maxDepth - 2) / vpcCount
 
-              return allVpcIds.map((vpcId, vi) => {
+              return layout.vpcZones.map(({ vpcId, index: vi, depth: zoneDepth, centerZ: zOffset }) => {
                 const hue = (vi * 220) % 360
-                const zOffset = -maxDepth / 2 + 1 + zoneDepth * vi + zoneDepth / 2
                 return (
                   <group key={`vpc-${vpcId}`}>
                     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[spanCenterX, 0.02, zOffset]}>
@@ -749,25 +780,26 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
 
         // Build position map for interconnect endpoints
         const positions = {}
+        // World position of a rack from the layout (falls back to the AZ's first rack slot)
+        const rackWorldPos = (azId, key, fallbackDz = 0) => {
+          const cw = icCageSizes[azId]?.width || MIN_CAGE_WIDTH
+          const cd = icCageSizes[azId]?.depth || MIN_CAGE_DEPTH
+          const lp = layout.rackPositions?.[azId]?.[key]
+          return [regionX + icAzPositions[azId] - cw / 2 + 4 + (lp?.x || 0), 4, regionZ + -cd / 2 + 4 + (lp ? lp.z : fallbackDz)]
+        }
         icAzs.forEach(az => {
-          const cw = icCageSizes[az.id]?.width || MIN_CAGE_WIDTH
-          const cd = icCageSizes[az.id]?.depth || MIN_CAGE_DEPTH
-          positions[`eks-${az.id}`] = [regionX + icAzPositions[az.id] - cw / 2 + 4, 4, regionZ + -cd / 2 + 4]
-          positions[`msk-${az.id}`] = [regionX + icAzPositions[az.id] - cw / 2 + 4, 4, regionZ + -cd / 2 + 8]
+          positions[`eks-${az.id}`] = rackWorldPos(az.id, 'eks')
+          positions[`msk-${az.id}`] = rackWorldPos(az.id, 'msk', 4)
         })
         icRdsWithStandbys.forEach(r => {
           const azX = icAzPositions[r.az]
           if (azX === undefined) return
-          const cw = icCageSizes[r.az]?.width || MIN_CAGE_WIDTH
-          const cd = icCageSizes[r.az]?.depth || MIN_CAGE_DEPTH
-          positions[r.id] = [regionX + azX - cw / 2 + 4, 4, regionZ + -cd / 2 + 12]
+          positions[r.id] = rackWorldPos(r.az, 'rds', 8)
         })
         ec2.filter(s => (s.role || guessRole(s.name)) === 'eks-node').forEach(s => {
           const azX = icAzPositions[s.az]
           if (azX === undefined) return
-          const cw = icCageSizes[s.az]?.width || MIN_CAGE_WIDTH
-          const cd = icCageSizes[s.az]?.depth || MIN_CAGE_DEPTH
-          positions[s.id] = [regionX + azX - cw / 2 + 4, 4, -cd / 2 + 4]
+          positions[s.id] = rackWorldPos(s.az, 'eks')
         })
         elbs.forEach(lb => {
           positions[lb.id] = [regionX + (icAzPositions[icAzs[0]?.id] || 0), 4, regionZ]
@@ -799,27 +831,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
         // For ELBs with port groups, show floating labels above the actual ELB rack
         if (pinned.arn && elbPortGroups.length > 0) {
           const firstAzId = icAzs[0]?.id
-          const azAServers = (regionData[firstRegionKey]?.ec2 || []).filter(s => s.az === firstAzId) || []
-          const nonEksA = azAServers.filter(s => s.role !== 'eks-node')
-          const groupsA = viewMode === 'subnet' ? Object.keys(groupBy(nonEksA, 'subnetId')) : Object.keys(groupBy(nonEksA, 'role'))
-          const getItemsA = (key) => {
-            if (key === '__eks' || key === '__msk') return [{ id: 'x' }]
-            if (key === '__rds') return icRdsByAz[firstAzId] || []
-            if (key === '__efs') return efsList
-            if (key === '__opensearch') return opensearchList
-            if (key === '__elb') return elbs
-            return viewMode === 'subnet' ? groupBy(nonEksA, 'subnetId')[key] : groupBy(nonEksA, 'role')[key]
-          }
-          const allKeysA = []
-          if (eks.azs.includes(firstAzId)) allKeysA.push('__eks')
-          if (msk.azs.includes(firstAzId)) allKeysA.push('__msk')
-          if ((icRdsByAz[firstAzId] || []).length > 0) allKeysA.push('__rds')
-          if (efsList.length > 0) allKeysA.push('__efs')
-          if (opensearchList.length > 0) allKeysA.push('__opensearch')
-          if (elbs.length > 0) allKeysA.push('__elb')
-          allKeysA.push(...groupsA)
-          const layoutA = layoutRacks(allKeysA, getItemsA)
-          const elbLayout = layoutA.positions.find(p => p.key === '__elb')
+          const elbLayout = layout.rackPositions?.[firstAzId]?.elb
           const cwA = icCageSizes[firstAzId]?.width || MIN_CAGE_WIDTH
           const cdA = icCageSizes[firstAzId]?.depth || MIN_CAGE_DEPTH
           const elbX = regionX + icAzPositions[firstAzId] + (-cwA / 2 + 4) + (elbLayout?.x || 0)
