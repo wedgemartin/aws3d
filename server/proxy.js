@@ -209,6 +209,7 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
       engine: db.Engine,
       version: db.EngineVersion,
       az: db.AvailabilityZone,
+      vpcId: db.DBSubnetGroup?.VpcId || null,
       endpoint: db.Endpoint?.Address || null,
       secondaryAz: db.SecondaryAvailabilityZone || null,
       multiAz: db.MultiAZ || false,
@@ -229,6 +230,7 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
       name: lb.LoadBalancerName,
       type: lb.Type,
       scheme: lb.Scheme,
+      vpcId: lb.VpcId || null,
       az: lb.AvailabilityZones?.[0]?.ZoneName || null,
       azs: (lb.AvailabilityZones || []).map(z => z.ZoneName),
       dnsName: lb.DNSName,
@@ -245,6 +247,7 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
           id: mt.MountTargetId,
           ip: mt.IpAddress,
           subnetId: mt.SubnetId,
+          vpcId: mt.VpcId,
           az: mt.AvailabilityZoneName,
           state: mt.LifeCycleState,
         }))
@@ -261,6 +264,7 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
       return {
         id: fs.FileSystemId,
         name: fs.Name || fs.FileSystemId,
+        vpcId: mountTargets.find(m => m.vpcId)?.vpcId || null,
         sizeBytes: fs.SizeInBytes?.Value,
         sizeLimitBytes: fs.SizeInBytes?.ValueInStandard != null
           ? (fs.SizeInBytes.ValueInIA || 0) + (fs.SizeInBytes.ValueInStandard || 0)
@@ -325,12 +329,14 @@ export function createProxy({ profile, region, regions, port = 9876, roleArn, ho
 
     const auroraNormalized = (dbClusters.DBClusters || []).map(c => {
       const globalInfo = globalClusterMap[c.DBClusterArn]
+      const member = (dbInstances.DBInstances || []).find(db => db.DBClusterIdentifier === c.DBClusterIdentifier)
       return {
         id: c.DBClusterIdentifier,
         name: c.DBClusterIdentifier,
         engine: c.Engine,
         version: c.EngineVersion,
         az: c.AvailabilityZones?.[0] || null,
+        vpcId: member?.DBSubnetGroup?.VpcId || null,
         endpoint: c.Endpoint,
         readerEndpoint: c.ReaderEndpoint,
         status: c.Status === 'available' ? 'healthy' : c.Status === 'stopped' ? 'down' : 'degraded',

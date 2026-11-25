@@ -125,11 +125,25 @@ function buildEc2Groups(servers, vpcIds, viewMode) {
 
 const ROW_PITCH = ROW_GAP + 3
 
+// Managed services (RDS, ELB, EFS, Aurora) are split into one rack per VPC so each
+// lands in its VPC's floor zone. Items with no known VPC stay in the shared band.
+function splitByVpc(items) {
+  const m = new Map()
+  for (const it of items) {
+    const v = it.vpcId || null
+    if (!m.has(v)) m.set(v, [])
+    m.get(v).push(it)
+  }
+  return [...m]
+}
+const vpcRackKey = (base, vpcId) => (vpcId ? `${base}:${vpcId}` : base)
+
 // Compute per-region layout data (AZs, cages, positions)
 function computeRegionLayout(regionProcessed, viewMode) {
   const { ec2, rds, eks, msk, elbs, efs, opensearch, aurora, subnets } = regionProcessed
   const serversByAz = groupBy(ec2, 'az')
-  const vpcIds = [...new Set(ec2.map(s => s.vpcId).filter(Boolean))]
+  // VPCs with EC2 first (keeps their colors stable), then VPCs that only host managed services
+  const vpcIds = [...new Set([...ec2, ...rds, ...elbs, ...efs, ...aurora].map(s => s.vpcId).filter(Boolean))]
 
   // Derive AZ list dynamically from all data sources
   const activeAzs = (() => {
@@ -163,11 +177,11 @@ function computeRegionLayout(regionProcessed, viewMode) {
     const racks = []
     if (eks.azs.includes(az.id)) racks.push({ key: 'eks', vpcId: eksNodes[0]?.vpcId || null, count: eksNodes.length || 1 })
     if (msk.azs.includes(az.id)) racks.push({ key: 'msk', vpcId: null, count: 1 })
-    if ((rdsByAz[az.id] || []).length > 0) racks.push({ key: 'rds', vpcId: null, count: rdsByAz[az.id].length })
-    if (first && aurora.length > 0) racks.push({ key: 'aurora', vpcId: null, count: aurora.length })
-    if (first && efs.length > 0) racks.push({ key: 'efs', vpcId: null, count: efs.length })
+    for (const [v, items] of splitByVpc(rdsByAz[az.id] || [])) racks.push({ key: vpcRackKey('rds', v), vpcId: v, count: items.length })
+    if (first) for (const [v, items] of splitByVpc(aurora)) racks.push({ key: vpcRackKey('aurora', v), vpcId: v, count: items.length })
+    if (first) for (const [v, items] of splitByVpc(efs)) racks.push({ key: vpcRackKey('efs', v), vpcId: v, count: items.length })
     if (first && opensearch.length > 0) racks.push({ key: 'opensearch', vpcId: null, count: opensearch.length })
-    if (first && elbs.length > 0) racks.push({ key: 'elb', vpcId: null, count: elbs.length })
+    if (first) for (const [v, items] of splitByVpc(elbs)) racks.push({ key: vpcRackKey('elb', v), vpcId: v, count: items.length })
     for (const g of buildEc2Groups(nonEks, vpcIds, viewMode)) racks.push({ key: g.key, vpcId: g.vpcId, count: g.items.length })
     racksByAz[az.id] = racks
   }
@@ -637,21 +651,21 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
                     if (mskItems.length > 0) {
                       allRacks.push({ key: 'msk', label: 'MSK', color: categoryColors.msk.bright, darkColor: categoryColors.msk.dark, category: 'msk', items: mskItems })
                     }
-                    if (azRds.length > 0) {
-                      allRacks.push({ key: 'rds', label: 'RDS', color: categoryColors.rds.bright, darkColor: categoryColors.rds.dark, category: 'rds', items: azRds.map(r => ({ id: r.id, name: `${r.name}${r.engine ? ` (${r.engine})` : ''}`, status: r.isStandby ? 'unknown' : r.status, isStandby: r.isStandby, multiAz: r.multiAz, endpoint: r.endpoint })) })
+                    for (const [vpcId, vpcItems] of splitByVpc(azRds)) {
+                      allRacks.push({ key: vpcRackKey('rds', vpcId), vpcId, label: 'RDS', color: categoryColors.rds.bright, darkColor: categoryColors.rds.dark, category: 'rds', items: vpcItems.map(r => ({ id: r.id, name: `${r.name}${r.engine ? ` (${r.engine})` : ''}`, status: r.isStandby ? 'unknown' : r.status, isStandby: r.isStandby, multiAz: r.multiAz, endpoint: r.endpoint })) })
                     }
                     // Aurora rack (shown in first AZ of region)
-                    if (az.id === regAzs[0]?.id && regAurora.length > 0) {
-                      allRacks.push({ key: 'aurora', label: 'Aurora', color: categoryColors.aurora.bright, darkColor: categoryColors.aurora.dark, category: 'aurora', items: regAurora.map(c => ({ id: c.id, name: `${c.name} (${c.role})`, status: c.status, globalClusterId: c.globalClusterId, role: c.role, endpoint: c.endpoint, readerEndpoint: c.readerEndpoint })) })
+                    if (az.id === regAzs[0]?.id) for (const [vpcId, vpcItems] of splitByVpc(regAurora)) {
+                      allRacks.push({ key: vpcRackKey('aurora', vpcId), vpcId, label: 'Aurora', color: categoryColors.aurora.bright, darkColor: categoryColors.aurora.dark, category: 'aurora', items: vpcItems.map(c => ({ id: c.id, name: `${c.name} (${c.role})`, status: c.status, globalClusterId: c.globalClusterId, role: c.role, endpoint: c.endpoint, readerEndpoint: c.readerEndpoint })) })
                     }
-                    if (az.id === regAzs[0]?.id && regEfs.length > 0) {
-                      allRacks.push({ key: 'efs', label: 'EFS', color: categoryColors.efs.bright, darkColor: categoryColors.efs.dark, category: 'efs', items: regEfs.map(fs => ({ id: fs.id, name: fs.name, status: fs.status, sizeBytes: fs.sizeBytes, throughputMode: fs.throughputMode, provisionedThroughput: fs.provisionedThroughput, performanceMode: fs.performanceMode, encrypted: fs.encrypted, mountTargets: fs.mountTargets, accessPoints: fs.accessPoints, serviceType: 'efs' })) })
+                    if (az.id === regAzs[0]?.id) for (const [vpcId, vpcItems] of splitByVpc(regEfs)) {
+                      allRacks.push({ key: vpcRackKey('efs', vpcId), vpcId, label: 'EFS', color: categoryColors.efs.bright, darkColor: categoryColors.efs.dark, category: 'efs', items: vpcItems.map(fs => ({ id: fs.id, name: fs.name, status: fs.status, sizeBytes: fs.sizeBytes, throughputMode: fs.throughputMode, provisionedThroughput: fs.provisionedThroughput, performanceMode: fs.performanceMode, encrypted: fs.encrypted, mountTargets: fs.mountTargets, accessPoints: fs.accessPoints, serviceType: 'efs' })) })
                     }
                     if (az.id === regAzs[0]?.id && regOpensearch.length > 0) {
                       allRacks.push({ key: 'opensearch', label: 'OpenSearch', color: categoryColors.opensearch.bright, darkColor: categoryColors.opensearch.dark, category: 'opensearch', items: regOpensearch.map(d => ({ id: d.id, name: `${d.name} (${d.version || ''})`, status: d.status })) })
                     }
-                    if (az.id === regAzs[0]?.id && regElbs.length > 0) {
-                      allRacks.push({ key: 'elb', label: 'ELB', color: categoryColors.network.bright, darkColor: categoryColors.network.dark, category: 'elb', items: regElbs.map(lb => { const t = lb.type === 'application' ? 'ALB' : lb.type === 'network' ? 'NLB' : 'CLB'; return { id: lb.id, name: `${lb.name} (${t})`, status: lb.status, arn: lb.id, dnsName: lb.dnsName } }) })
+                    if (az.id === regAzs[0]?.id) for (const [vpcId, vpcItems] of splitByVpc(regElbs)) {
+                      allRacks.push({ key: vpcRackKey('elb', vpcId), vpcId, label: 'ELB', color: categoryColors.network.bright, darkColor: categoryColors.network.dark, category: 'elb', items: vpcItems.map(lb => { const t = lb.type === 'application' ? 'ALB' : lb.type === 'network' ? 'NLB' : 'CLB'; return { id: lb.id, name: `${lb.name} (${t})`, status: lb.status, arn: lb.id, dnsName: lb.dnsName } }) })
                     }
 
                     // EC2 racks by role or subnet
@@ -794,7 +808,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
         icRdsWithStandbys.forEach(r => {
           const azX = icAzPositions[r.az]
           if (azX === undefined) return
-          positions[r.id] = rackWorldPos(r.az, 'rds', 8)
+          positions[r.id] = rackWorldPos(r.az, vpcRackKey('rds', r.vpcId), 8)
         })
         ec2.filter(s => (s.role || guessRole(s.name)) === 'eks-node').forEach(s => {
           const azX = icAzPositions[s.az]
@@ -802,7 +816,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
           positions[s.id] = rackWorldPos(s.az, 'eks')
         })
         elbs.forEach(lb => {
-          positions[lb.id] = [regionX + (icAzPositions[icAzs[0]?.id] || 0), 4, regionZ]
+          positions[lb.id] = icAzs[0] ? rackWorldPos(icAzs[0].id, vpcRackKey('elb', lb.vpcId)) : [regionX, 4, regionZ]
         })
         ec2.forEach(s => {
           if (!positions[s.id]) {
@@ -823,7 +837,11 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
           const cw = rLayout.cageSizes[firstAz.id]?.width || MIN_CAGE_WIDTH
           rAurora.forEach(c => {
             if (!positions[c.id]) {
-              positions[c.id] = [rPos.x + azX - cw / 2 + 4, 4, rPos.z]
+              const lp = rLayout.rackPositions?.[firstAz.id]?.[vpcRackKey('aurora', c.vpcId)]
+              const cd = rLayout.cageSizes[firstAz.id]?.depth || MIN_CAGE_DEPTH
+              positions[c.id] = lp
+                ? [rPos.x + azX - cw / 2 + 4 + lp.x, 4, rPos.z - cd / 2 + 4 + lp.z]
+                : [rPos.x + azX - cw / 2 + 4, 4, rPos.z]
             }
           })
         }
@@ -831,7 +849,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
         // For ELBs with port groups, show floating labels above the actual ELB rack
         if (pinned.arn && elbPortGroups.length > 0) {
           const firstAzId = icAzs[0]?.id
-          const elbLayout = layout.rackPositions?.[firstAzId]?.elb
+          const elbLayout = layout.rackPositions?.[firstAzId]?.[vpcRackKey('elb', elbs.find(lb => lb.id === pinned.arn)?.vpcId)]
           const cwA = icCageSizes[firstAzId]?.width || MIN_CAGE_WIDTH
           const cdA = icCageSizes[firstAzId]?.depth || MIN_CAGE_DEPTH
           const elbX = regionX + icAzPositions[firstAzId] + (-cwA / 2 + 4) + (elbLayout?.x || 0)
@@ -883,7 +901,7 @@ export default function DataCenter({ onSelect, onPin, viewMode, onLoaded, onFetc
           if (!rd || !layout) continue
           const rPos = regionPositions[regionKey] || { x: 0, z: 0 }
           // VPCs span the whole region — compute center of the spanning zone
-          const allVpcIds = [...new Set((rd.ec2 || []).map(s => s.vpcId).filter(Boolean))]
+          const allVpcIds = layout.vpcIds
           if (allVpcIds.length === 0) continue
           const azXs = layout.activeAzs.map(az => layout.azPositions[az.id])
           const leftAz = layout.activeAzs.reduce((a, b) => layout.azPositions[a.id] < layout.azPositions[b.id] ? a : b)
